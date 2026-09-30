@@ -73,7 +73,8 @@ final class HostSession {
             startStream(on: s.displayID)
         case .clipboard:
             let text = String(decoding: payload, as: UTF8.self)
-            DispatchQueue.main.async { self.clipboard?.set(text) }
+            // Synchronously: the iPad's paste button sends ⌘V right behind this.
+            DispatchQueue.main.sync { self.clipboard?.set(text) }
         case .screenInfo, .videoFormat, .videoFrame, .error, .cursor:
             fail(.badPayload(type))
         }

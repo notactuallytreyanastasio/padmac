@@ -1,5 +1,6 @@
 import AVFoundation
 import UIKit
+import UniformTypeIdentifiers
 
 /// The remote screen and every way of driving it.
 ///
@@ -8,6 +9,11 @@ import UIKit
 /// touch-hold-then-drag drags. "Direct" mode instead clicks where you touch.
 /// An iPad trackpad or mouse maps absolutely: hovering puts the Mac cursor
 /// under it, and the iPad's own pointer is hidden.
+///
+/// Pinch zooms (a 32:9 display on a 4:3 iPad is unreadable otherwise), three
+/// fingers pan, and while zoomed the view follows the Mac cursor. Zoom is a
+/// transform on the video view, so `location(in: video)` still returns
+/// unzoomed coordinates and none of the input mapping has to know about it.
 final class RemoteViewController: UIViewController, UIPointerInteractionDelegate, UIGestureRecognizerDelegate {
     enum TouchMode { case trackpad, direct }
 
@@ -23,6 +29,14 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     private var sticky = Set<UInt16>()
     private var dragging = false
 
+    // Zoom: screen point = offset + zoom * point in the video view's own bounds.
+    private var zoom: CGFloat = 1
+    private var offset = CGPoint.zero
+    private var pinchStart: (zoom: CGFloat, offset: CGPoint, centroid: CGPoint)?
+    private var pinching = false
+    private var zoomButton: UIButton!
+    private var displayButton: UIButton!
+
     init(session: RemoteSession) {
         self.session = session
         super.init(nibName: nil, bundle: nil)
@@ -34,11 +48,20 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         super.viewDidLoad()
         view.backgroundColor = .black
 
-        video.frame = view.bounds
-        video.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        video.layer.anchorPoint = .zero
         video.needKeyframe = { [weak session] in session?.requestKeyframe() }
         view.addSubview(video)
         session.video = video
+        session.onCursor = { [weak self] x, y in self?.follow(x, y) }
+        session.onScreen = { [weak self] _ in
+            guard let self else { return }
+            self.setZoom(1, offset: .zero)
+            self.updateDisplayMenu()
+            // Test hook: `-zoomFill YES` starts zoomed, for simulator screenshots.
+            if UserDefaults.standard.bool(forKey: "zoomFill") {
+                self.setZoom(self.fillZoom, offset: .zero)
+            }
+        }
 
         keys.frame = .zero
         keys.onKey = { [weak self] code, down in self?.session.send(.key(code: code, down: down)) }
@@ -63,6 +86,12 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         keys.becomeFirstResponder()
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        video.bounds = CGRect(origin: .zero, size: view.bounds.size)
+        applyZoom()
+    }
+
     override var prefersStatusBarHidden: Bool { true }
     override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
@@ -83,7 +112,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     /// iPad points to Mac points, with a little acceleration for fast swipes.
     private func macDelta(_ d: CGPoint, velocity: CGPoint) -> (Double, Double) {
         guard let s = session.screen else { return (0, 0) }
-        let scale = s.screenWidth / videoRect.width
+        let scale = s.screenWidth / (videoRect.width * zoom)
         let speed = hypot(velocity.x, velocity.y)
         let accel = 1.2 + min(speed / 900, 1.8)
         return (Double(d.x * scale * accel), Double(d.y * scale * accel))
@@ -116,16 +145,26 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         hold.allowedTouchTypes = direct
         hold.delegate = self
 
-        for g in [pan, scroll, tap, twoTap, hold] as [UIGestureRecognizer] { video.addGestureRecognizer(g) }
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinch(_:)))
+
+        let threePan = UIPanGestureRecognizer(target: self, action: #selector(threeFingerPan(_:)))
+        threePan.minimumNumberOfTouches = 3
+        threePan.maximumNumberOfTouches = 3
+        threePan.allowedTouchTypes = direct
+
+        for g in [pan, scroll, tap, twoTap, hold, pinch, threePan] as [UIGestureRecognizer] {
+            g.delegate = self
+            view.addGestureRecognizer(g)
+        }
     }
 
     @objc private func onePan(_ g: UIPanGestureRecognizer) {
         guard !dragging else { return }
         switch mode {
         case .trackpad:
-            let t = g.translation(in: video)
-            g.setTranslation(.zero, in: video)
-            let (dx, dy) = macDelta(t, velocity: g.velocity(in: video))
+            let t = g.translation(in: view)
+            g.setTranslation(.zero, in: view)
+            let (dx, dy) = macDelta(t, velocity: g.velocity(in: view))
             if dx != 0 || dy != 0 { session.send(.moveBy(dx: dx, dy: dy)) }
         case .direct:
             let (x, y) = normalized(g.location(in: video))
@@ -143,9 +182,10 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     }
 
     @objc private func scroll(_ g: UIPanGestureRecognizer) {
-        let t = g.translation(in: video)
-        g.setTranslation(.zero, in: video)
-        let k = (session.screen?.screenWidth ?? videoRect.width) / videoRect.width
+        let t = g.translation(in: view)
+        g.setTranslation(.zero, in: view)
+        guard !pinching else { return } // this two-finger gesture turned out to be a pinch
+        let k = (session.screen?.screenWidth ?? videoRect.width) / (videoRect.width * zoom)
         session.send(.scroll(dx: Double(t.x * k), dy: Double(t.y * k)))
     }
 
@@ -171,11 +211,11 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         switch g.state {
         case .began:
             dragging = true
-            lastHold = g.location(in: video)
+            lastHold = g.location(in: view)
             session.send(.button(.left, down: true))
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         case .changed:
-            let p = g.location(in: video)
+            let p = g.location(in: view)
             let (dx, dy) = macDelta(CGPoint(x: p.x - lastHold.x, y: p.y - lastHold.y), velocity: .zero)
             lastHold = p
             session.send(.moveBy(dx: dx, dy: dy))
@@ -187,8 +227,82 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     private var lastHold = CGPoint.zero
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        // The hold must be able to take over from a pan that has barely started.
-        g is UILongPressGestureRecognizer && other is UIPanGestureRecognizer
+        // The hold must be able to take over from a pan that has barely started,
+        // and a two-finger gesture is a scroll until it proves to be a pinch.
+        (g is UILongPressGestureRecognizer && other is UIPanGestureRecognizer)
+            || g is UIPinchGestureRecognizer || other is UIPinchGestureRecognizer
+    }
+
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        // Toolbar buttons must not also click on the Mac.
+        !(touch.view?.isDescendant(of: toolbar) ?? false)
+    }
+
+    // MARK: Zoom
+
+    @objc private func pinch(_ g: UIPinchGestureRecognizer) {
+        let c = g.location(in: view)
+        switch g.state {
+        case .began:
+            pinchStart = (zoom, offset, c)
+            pinching = false
+        case .changed:
+            guard let start = pinchStart else { return }
+            if !pinching && abs(g.scale - 1) > 0.08 { pinching = true }
+            guard pinching else { return }
+            let z = min(max(start.zoom * g.scale, 1), 8)
+            // Keep the point that was under the fingers under them, and let them pan.
+            let p = CGPoint(x: (start.centroid.x - start.offset.x) / start.zoom, y: (start.centroid.y - start.offset.y) / start.zoom)
+            setZoom(z, offset: CGPoint(x: c.x - z * p.x, y: c.y - z * p.y))
+        default:
+            pinchStart = nil
+            pinching = false
+        }
+    }
+
+    @objc private func threeFingerPan(_ g: UIPanGestureRecognizer) {
+        let t = g.translation(in: view)
+        g.setTranslation(.zero, in: view)
+        setZoom(zoom, offset: CGPoint(x: offset.x + t.x, y: offset.y + t.y))
+    }
+
+    /// Zoom that makes the display fill the iPad's short side: the useful one for an ultrawide.
+    private var fillZoom: CGFloat {
+        let r = videoRect
+        guard r.width > 0, r.height > 0 else { return 1 }
+        return max(view.bounds.width / r.width, view.bounds.height / r.height)
+    }
+
+    private func setZoom(_ z: CGFloat, offset o: CGPoint) {
+        zoom = z
+        offset = o
+        applyZoom()
+    }
+
+    /// Clamp so the display never leaves a gap it could fill, then apply.
+    private func applyZoom() {
+        let r = videoRect, W = view.bounds.width, H = view.bounds.height
+        func clamp(_ o: CGFloat, _ lo: CGFloat, _ len: CGFloat, _ span: CGFloat) -> CGFloat {
+            let size = zoom * len
+            if size <= span { return (span - size) / 2 - zoom * lo }
+            return min(max(o, span - zoom * (lo + len)), -zoom * lo)
+        }
+        offset = CGPoint(x: clamp(offset.x, r.minX, r.width, W), y: clamp(offset.y, r.minY, r.height, H))
+        video.center = .zero
+        video.transform = CGAffineTransform(a: zoom, b: 0, c: 0, d: zoom, tx: offset.x, ty: offset.y)
+        zoomButton?.configuration?.image = UIImage(systemName: zoom > 1.01 ? "minus.magnifyingglass" : "plus.magnifyingglass")
+    }
+
+    /// While zoomed, keep the Mac cursor inside the middle of the iPad screen.
+    private func follow(_ x: Double, _ y: Double) {
+        guard zoom > 1.01, pinchStart == nil else { return }
+        let r = videoRect
+        let p = CGPoint(x: offset.x + zoom * (r.minX + CGFloat(x) * r.width), y: offset.y + zoom * (r.minY + CGFloat(y) * r.height))
+        let mx = view.bounds.width * 0.15, my = view.bounds.height * 0.15
+        var o = offset
+        if p.x < mx { o.x += mx - p.x } else if p.x > view.bounds.width - mx { o.x -= p.x - (view.bounds.width - mx) }
+        if p.y < my { o.y += my - p.y } else if p.y > view.bounds.height - my { o.y -= p.y - (view.bounds.height - my) }
+        if o != offset { setZoom(zoom, offset: o) }
     }
 
     private func click(_ b: MouseButton) {
@@ -201,28 +315,34 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     private func installPointerGestures() {
         let pointer = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
 
-        video.addInteraction(UIPointerInteraction(delegate: self))
-        video.addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(hover(_:))))
+        view.addInteraction(UIPointerInteraction(delegate: self))
+        let hover = UIHoverGestureRecognizer(target: self, action: #selector(hover(_:)))
+        hover.delegate = self
+        view.addGestureRecognizer(hover)
 
         let click = UITapGestureRecognizer(target: self, action: #selector(pointerClick(_:)))
         click.allowedTouchTypes = pointer
         click.buttonMaskRequired = .primary
-        video.addGestureRecognizer(click)
+        click.delegate = self
+        view.addGestureRecognizer(click)
 
         let secondary = UITapGestureRecognizer(target: self, action: #selector(pointerSecondary(_:)))
         secondary.allowedTouchTypes = pointer
         secondary.buttonMaskRequired = .secondary
-        video.addGestureRecognizer(secondary)
+        secondary.delegate = self
+        view.addGestureRecognizer(secondary)
 
         let drag = UIPanGestureRecognizer(target: self, action: #selector(pointerDrag(_:)))
         drag.allowedTouchTypes = pointer
-        video.addGestureRecognizer(drag)
+        drag.delegate = self
+        view.addGestureRecognizer(drag)
 
         // Two-finger scrolling on a trackpad / mouse wheel arrives as touchless pans.
         let wheel = UIPanGestureRecognizer(target: self, action: #selector(scroll(_:)))
         wheel.allowedScrollTypesMask = .all
         wheel.allowedTouchTypes = []
-        video.addGestureRecognizer(wheel)
+        wheel.delegate = self
+        view.addGestureRecognizer(wheel)
     }
 
     func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
@@ -384,6 +504,31 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
             guard let self else { return }
             self.setSoftKeyboard(!self.keys.softKeyboard)
         }
+        zoomButton = button("plus.magnifyingglass", "Zoom") { [weak self] _ in
+            guard let self else { return }
+            // Toggle between the whole display and filling the iPad's short side, centred on the cursor's area.
+            if self.zoom > 1.01 {
+                self.setZoom(1, offset: .zero)
+            } else {
+                let z = self.fillZoom > 1.01 ? self.fillZoom : 2
+                let c = CGPoint(x: self.view.bounds.midX, y: self.view.bounds.midY)
+                self.setZoom(z, offset: CGPoint(x: c.x - z * c.x, y: c.y - z * c.y))
+            }
+        }
+        displayButton = button("display.2", "Display") { _ in }
+        displayButton.showsMenuAsPrimaryAction = true
+        displayButton.isHidden = true
+
+        var pasteConfig = UIPasteControl.Configuration()
+        pasteConfig.displayMode = .iconOnly
+        pasteConfig.cornerStyle = .capsule
+        pasteConfig.baseBackgroundColor = .clear
+        pasteConfig.baseForegroundColor = .white
+        let paste = UIPasteControl(configuration: pasteConfig)
+        paste.target = self
+        paste.accessibilityLabel = "Paste iPad clipboard on the Mac"
+        toolbar.addArrangedSubview(paste)
+
         modeButton = button("hand.point.up.left", "Touch mode") { [weak self] b in
             guard let self else { return }
             self.mode = self.mode == .trackpad ? .direct : .trackpad
@@ -393,6 +538,39 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         _ = button("xmark", "Disconnect") { [weak self] _ in
             self?.session.stop()
             self?.onClose?()
+        }
+    }
+
+    private func updateDisplayMenu() {
+        guard let info = session.screen else { return }
+        displayButton.isHidden = info.displays.count < 2
+        displayButton.menu = UIMenu(title: "Show display", children: info.displays.map { d in
+            UIAction(title: d.name, subtitle: "\(Int(d.width)) × \(Int(d.height))", state: d.id == info.displayID ? .on : .off) { [weak self] _ in
+                self?.session.selectDisplay(d.id)
+            }
+        })
+    }
+
+    // MARK: Paste (UIPasteControl reads the iPad clipboard without a permission prompt)
+
+    override var pasteConfiguration: UIPasteConfiguration? {
+        get { UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.plainText.identifier]) }
+        set {}
+    }
+
+    override func paste(itemProviders: [NSItemProvider]) {
+        guard let provider = itemProviders.first(where: { $0.canLoadObject(ofClass: String.self) }) else { return }
+        _ = provider.loadObject(ofClass: String.self) { [weak self] text, _ in
+            guard let text else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // Put it on the Mac's clipboard, then paste it where the Mac's focus is.
+                self.session.sendClipboard(text)
+                self.session.send(.key(code: 55, down: true))
+                self.tapKey(9) // V
+                self.session.send(.key(code: 55, down: false))
+                self.flash("Pasted on the Mac")
+            }
         }
     }
 

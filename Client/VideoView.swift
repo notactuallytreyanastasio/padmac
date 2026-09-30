@@ -26,17 +26,23 @@ final class VideoView: UIView, VideoSink {
     required init?(coder: NSCoder) { fatalError() }
 
     func videoFormat(_ format: CMVideoFormatDescription) {
-        lock.lock(); self.format = format; lock.unlock()
+        lock.lock()
+        let changed = self.format.map { !CMFormatDescriptionEqual($0, otherFormatDescription: format) } ?? true
+        self.format = format
+        if changed { waitingForKeyframe = true }
+        lock.unlock()
+        // New size or codec (display switch, resolution change): drop the old picture's decoder state.
+        if changed { displayLayer.sampleBufferRenderer.flush() }
     }
 
-    func videoFrame(_ avcc: Data, keyframe: Bool) {
+    func videoFrame(_ data: Data, keyframe: Bool) {
         lock.lock()
         let format = self.format
         if keyframe { waitingForKeyframe = false }
         let skip = waitingForKeyframe
         lock.unlock()
         guard !skip, let format,
-              let sample = H264.sampleBuffer(avcc: avcc, format: format, displayImmediately: true) else { return }
+              let sample = VideoFormat.sampleBuffer(data, format: format, displayImmediately: true) else { return }
 
         let renderer = displayLayer.sampleBufferRenderer
         if renderer.status == .failed {

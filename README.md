@@ -2,11 +2,13 @@
 
 Control a Mac from an iPad over the local network. Two apps:
 
-- **Remote Mac Host** (macOS menu-bar app) captures the main display with
-  ScreenCaptureKit, hardware-encodes it to H.264, and injects the iPad's
-  input with CGEvent.
+- **Remote Mac Host** (macOS menu-bar app) captures a display with
+  ScreenCaptureKit and hardware-encodes it to HEVC at native resolution. It
+  falls back to H.264, capped at 4096 px wide. It injects the iPad's input
+  with CGEvent and syncs clipboard text.
 - **Remote Mac** (iPad app) finds hosts over Bonjour, decodes the stream with
   `AVSampleBufferDisplayLayer`, and sends touch, trackpad and keyboard input.
+  It reconnects on its own after being backgrounded or losing Wi-Fi.
 
 The link is TLS 1.2 with a pre-shared key derived from an 8-character pairing
 code that the host shows. There are no certificates and no accounts. A client
@@ -43,6 +45,18 @@ If Bonjour can't see the Mac (e.g. over Tailscale), connect by address. The port
 | 2-finger tap | right-click | right-click there |
 | 2-finger drag | scroll | scroll |
 | touch, hold, drag | drag | — |
+| pinch | zoom (1–8×) | zoom (1–8×) |
+| 3-finger drag | pan the zoomed view | pan the zoomed view |
+
+While zoomed, the view follows the Mac cursor. The toolbar's magnifier toggles
+between the whole display and filling the iPad's short side, which is the
+useful zoom for an ultrawide. A display button appears when the Mac has more
+than one active display.
+
+Clipboard text copied on the Mac shows up on the iPad right away. Anything
+a password manager marks as concealed stays on the Mac. Going the other way,
+the toolbar's paste button puts the iPad clipboard on the Mac and presses ⌘V.
+It's a system paste control, so iPadOS doesn't ask permission each time.
 
 An iPad trackpad or mouse maps absolutely: hover puts the Mac cursor under it,
 click and right-click work, and two-finger scrolling scrolls. The iPad's own
@@ -57,21 +71,31 @@ Sticky modifiers apply to the next key, so ⌘ then `c` copies.
 
 ```sh
 xcodebuild -scheme probe -derivedDataPath build build
-build/Build/Products/Debug/probe 127.0.0.1 <CODE> frame.png --move
+build/Build/Products/Debug/probe 127.0.0.1 <CODE> frame.png --move --displays --clipboard
 ```
 
 The probe connects like the iPad does, decodes every frame with VideoToolbox,
 writes one to `frame.png`, and checks that absolute and relative cursor moves
-land where expected. It also prints PASS/FAIL. Don't touch the mouse while it runs.
+land where expected. `--displays` switches display (or restarts the stream
+if there's only one). `--clipboard` round-trips the pasteboard and restores
+it afterwards. Each check prints PASS/FAIL, and `--h264` forces the
+fallback codec. Don't touch the mouse while it runs.
+
+To run a second host next to an installed one, launch the binary with
+`-port 47429 -pairingCode TESTCODE` and point the probe at `127.0.0.1:47429`.
 
 ## What does not work / not done
 
-- **Main display only.** Other displays aren't selectable, and a resolution
-  change mid-session isn't handled (reconnect).
+- **Switching to a second display is untested.** The dev Mac had its lid
+  closed, so only one display was active. Re-selecting the same display (the
+  path a resolution change also takes) is tested.
+- **Older iPads and 5120-wide HEVC.** The client asks for up to twice its own
+  resolution, so an ultrawide streams at 5120×1440. M-series iPads decode that
+  easily. An A12-era iPad may not. If the picture stays black, that's the
+  first suspect.
 - **No audio.**
 - **iPadOS keeps some shortcuts.** ⌘-Tab, ⌘-Space and Globe shortcuts go to the iPad, not the Mac.
-- **No pinch-to-zoom** on the remote screen.
-- **No clipboard sync.**
+- **Clipboard is text only.** No images or files.
 - **Local network only by design.** The 40-bit code resists online guessing,
   but a captured handshake could be brute-forced offline. Don't port-forward
   47428 to the internet. Use Tailscale or another VPN.

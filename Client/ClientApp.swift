@@ -32,6 +32,15 @@ struct RemoteScreen: View {
                 ProgressView("Connecting to \(session.hostName)…").tint(.white).foregroundStyle(.white)
             case .streaming:
                 EmptyView()
+            case .reconnecting(let why):
+                VStack(spacing: 12) {
+                    ProgressView().tint(.white)
+                    Text("Reconnecting to \(session.hostName)…").foregroundStyle(.white)
+                    Text(why).font(.caption).foregroundStyle(.white.opacity(0.7))
+                    Button("Back") { session.stop(); close() }.buttonStyle(.bordered).tint(.white)
+                }
+                .padding(24)
+                .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 16))
             case .failed(let message, let badCode):
                 VStack(spacing: 16) {
                     Text(message).foregroundStyle(.white).multilineTextAlignment(.center)
@@ -114,10 +123,12 @@ struct HostPicker: View {
         }
         .onAppear {
             browser.start()
-            // Test hook: launch with `-autoconnect <host> -code <code>` to skip the UI.
+            // Test hook: launch with `-autoconnect <host>[:port] -code <code>` to skip the UI.
             let d = UserDefaults.standard
-            if let host = d.string(forKey: "autoconnect"), let c = d.string(forKey: "code") {
-                start(host, .hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: Wire.port)!), c)
+            if let target = d.string(forKey: "autoconnect"), let c = d.string(forKey: "code") {
+                let parts = target.split(separator: ":")
+                let port = parts.count > 1 ? UInt16(parts[1]) ?? Wire.port : Wire.port
+                start(String(parts[0]), .hostPort(host: NWEndpoint.Host(String(parts[0])), port: NWEndpoint.Port(rawValue: port)!), c)
             }
         }
         .onDisappear { browser.stop() }
