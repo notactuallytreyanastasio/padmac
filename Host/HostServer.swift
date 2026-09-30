@@ -10,13 +10,16 @@ final class HostServer {
 
     var onStatus: ((String) -> Void)?
 
+    /// `-port N` on the command line overrides it, for running a second host while developing.
+    let port = UInt16(exactly: UserDefaults.standard.integer(forKey: "port")).flatMap { $0 == 0 ? nil : $0 } ?? Wire.port
+
     func start(code: String, name: String) throws {
         stop()
-        let listener = try NWListener(using: PairingSecurity.parameters(code: code), on: NWEndpoint.Port(rawValue: Wire.port)!)
+        let listener = try NWListener(using: PairingSecurity.parameters(code: code), on: NWEndpoint.Port(rawValue: port)!)
         listener.service = NWListener.Service(name: name, type: Wire.serviceType)
         listener.stateUpdateHandler = { [weak self] state in
             switch state {
-            case .ready: self?.onStatus?("Waiting for iPad on port \(Wire.port)")
+            case .ready: self?.onStatus?("Waiting for iPad on port \(self?.port ?? Wire.port)")
             case .failed(let e): self?.onStatus?("Listener failed: \(e.localizedDescription)")
             default: break
             }
@@ -42,7 +45,7 @@ final class HostServer {
                 guard let self, self.session === ended else { return }
                 self.session = nil
                 let why = error.map { ": \($0.localizedDescription)" } ?? ""
-                self.onStatus?("Disconnected\(why). Waiting for iPad on port \(Wire.port)")
+                self.onStatus?("Disconnected\(why). Waiting for iPad on port \(self.port)")
             }
         }
         session = s

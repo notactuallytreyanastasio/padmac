@@ -7,3 +7,4 @@ DerivedData/
 *.png
 Host/Info.plist
 Client/Info.plist
+build-dev/

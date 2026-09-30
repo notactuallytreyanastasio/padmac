@@ -7,7 +7,7 @@ import CoreGraphics
 /// Posting a flagsChanged event for Command does not make the next synthesized
 /// key event carry the Command flag, so without this Cmd-C arrives as plain "c".
 final class InputInjector {
-    private let displayID: CGDirectDisplayID
+    var displayID: CGDirectDisplayID
     private let source = CGEventSource(stateID: .hidSystemState)
     private var buttons = Set<MouseButton>()
     private var heldKeys = Set<UInt16>()
