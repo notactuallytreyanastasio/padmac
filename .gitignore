@@ -8,3 +8,4 @@ DerivedData/
 Host/Info.plist
 Client/Info.plist
 build-dev/
+build-test/

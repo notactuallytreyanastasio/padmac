@@ -23,7 +23,9 @@ brew install xcodegen          # if needed
 
 Click the display icon in the menu bar. Grant **Screen Recording** and
 **Accessibility**, then quit and reopen the host once (macOS only applies Screen
-Recording on relaunch). The pairing code is shown there too.
+Recording on relaunch). The pairing code is shown there too, along with who's
+connected, a Disconnect button, and "Open at login". While an iPad is
+connected, the Mac's display is woken and kept from sleeping.
 
 On the iPad, pick one:
 
@@ -67,22 +69,35 @@ function keys, with key repeat. The on-screen keyboard (toolbar ⌨) types
 literal text and has an accessory row: esc, tab, sticky ⌃⌥⌘⇧ and arrows.
 Sticky modifiers apply to the next key, so ⌘ then `c` copies.
 
-## Verifying a host without an iPad
+## Tests
 
 ```sh
-xcodebuild -scheme probe -derivedDataPath build build
-build/Build/Products/Debug/probe 127.0.0.1 <CODE> frame.png --move --displays --clipboard
+./scripts/test.sh          # everything; leaves your cursor and clipboard alone
+./scripts/test.sh --live   # also moves the real cursor and round-trips the clipboard
 ```
 
-The probe connects like the iPad does, decodes every frame with VideoToolbox,
-writes one to `frame.png`, and checks that absolute and relative cursor moves
-land where expected. `--displays` switches display (or restarts the stream
-if there's only one). `--clipboard` round-trips the pasteboard and restores
-it afterwards. Each check prints PASS/FAIL, and `--h264` forces the
-fallback codec. Don't touch the mouse while it runs.
+What runs:
 
-To run a second host next to an installed one, launch the binary with
-`-port 47429 -pairingCode TESTCODE` and point the probe at `127.0.0.1:47429`.
+| Layer | Where | What it proves |
+|---|---|---|
+| `RemoteMacTests` (44) | macOS | Wire format round-trips and rejects malformed input. Framing over a real TLS-PSK socket: 5 MB messages, wrong code rejected, unknown or oversized messages hang up, video backpressure. HEVC at 5120×1440 and H.264 encoded and decoded through the real pipeline. Input logic: double-click counting, ⌘ flags on ⌘C, key repeat, text chunking, the lost-delta bug. The iPad key map checked against macOS's real US layout. The host server in dry-run mode. The display staying awake only while an iPad is connected. |
+| `RemoteMacClientTests` (9) | iPad simulator | Zoom/pan geometry: no gaps, the pinch anchor stays put, follow-the-cursor. |
+| `RemoteMacUITests` (10) | iPad simulator | The real app, with real taps, drags, pinches and keyboard keys, against a real host in `-dryRunInput` mode. Assertions are on the input the host received. |
+| `probe` | macOS | Real screen capture → HEVC → TLS → decode, a stream restart, and median capture-to-decode latency under 50 ms (this Mac: ~18 ms). |
+
+The UI tests need the simulator's on-screen keyboard (I/O › Keyboard ›
+Connect Hardware Keyboard off). The host needs Screen Recording permission
+for your terminal.
+
+The probe also works on its own, against any host:
+
+```sh
+probe <host[:port]> <code> frame.png [--move] [--displays] [--clipboard] [--h264] [--latency]
+```
+
+To run a second host next to an installed one, launch its binary with
+`-port 47429 -pairingCode TESTCODE`. Add `-dryRunInput YES -inputLog <path>`
+and it logs input instead of posting it.
 
 ## What does not work / not done
 
@@ -96,6 +111,8 @@ To run a second host next to an installed one, launch the binary with
 - **No audio.**
 - **iPadOS keeps some shortcuts.** ⌘-Tab, ⌘-Space and Globe shortcuts go to the iPad, not the Mac.
 - **Clipboard is text only.** No images or files.
+- **Locked-screen login is untested.** Typing your password at the lock
+  screen from the iPad may be blocked by macOS secure input.
 - **Local network only by design.** The 40-bit code resists online guessing,
   but a captured handshake could be brute-forced offline. Don't port-forward
   47428 to the internet. Use Tailscale or another VPN.

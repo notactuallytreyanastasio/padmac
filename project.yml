@@ -29,6 +29,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.bgrayson.remotemac.host
         ENABLE_HARDENED_RUNTIME: NO
         CODE_SIGN_IDENTITY: Apple Development
+    scheme:
+      testTargets: [RemoteMacTests]
   RemoteMac:
     type: application
     platform: iOS
@@ -56,7 +58,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.bgrayson.remotemac.ipad
         TARGETED_DEVICE_FAMILY: "1,2"
+    scheme:
+      testTargets: [RemoteMacClientTests, RemoteMacUITests]
   probe:
+    scheme: {}
     type: tool
     platform: macOS
     sources: [Probe, Shared]
@@ -65,3 +70,41 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         DEVELOPMENT_TEAM: ""
+
+  # Wire format, framing over real TLS, the codec pipeline, input logic, key
+  # map against the real US layout, and the host server in dry-run mode.
+  RemoteMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests/Mac
+      - Shared
+      - path: Host
+        excludes: [HostApp.swift, Info.plist]
+      - Client/KeyMap.swift
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: ""
+        GENERATE_INFOPLIST_FILE: YES
+  # Pure iPad-side logic: zoom geometry.
+  RemoteMacClientTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests/Client, Client/Viewport.swift]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+  # The real app, real gestures, against a dry-run host (see scripts/test.sh).
+  RemoteMacUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [Tests/UI, Shared/Wire.swift]
+    dependencies:
+      - target: RemoteMac
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: RemoteMac
