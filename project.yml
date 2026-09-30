@@ -1,0 +1,67 @@
+name: RemoteMac
+options:
+  bundleIdPrefix: com.bgrayson.remotemac
+  deploymentTarget:
+    macOS: "14.0"
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: NY422J2AAW
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  RemoteMacHost:
+    type: application
+    platform: macOS
+    sources: [Host, Shared]
+    info:
+      path: Host/Info.plist
+      properties:
+        CFBundleDisplayName: Remote Mac Host
+        LSUIElement: true
+        NSLocalNetworkUsageDescription: Lets your iPad find and connect to this Mac.
+        NSBonjourServices: [_remotemac._tcp]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bgrayson.remotemac.host
+        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_IDENTITY: Apple Development
+  RemoteMac:
+    type: application
+    platform: iOS
+    sources: [Client, Shared]
+    info:
+      path: Client/Info.plist
+      properties:
+        CFBundleDisplayName: Remote Mac
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationPortrait
+        NSLocalNetworkUsageDescription: Finds Macs running Remote Mac Host on your network.
+        NSBonjourServices: [_remotemac._tcp]
+        UIApplicationSupportsIndirectInputEvents: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bgrayson.remotemac.ipad
+        TARGETED_DEVICE_FAMILY: "1,2"
+  probe:
+    type: tool
+    platform: macOS
+    sources: [Probe, Shared]
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: ""

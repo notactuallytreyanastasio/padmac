@@ -1,0 +1,9 @@
+build/
+DerivedData/
+*.xcodeproj/
+*.ipa
+.prs/
+.DS_Store
+*.png
+Host/Info.plist
+Client/Info.plist
