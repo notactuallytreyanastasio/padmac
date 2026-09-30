@@ -4,7 +4,7 @@ import Foundation
 import ScreenCaptureKit
 import VideoToolbox
 
-/// Captures one display with ScreenCaptureKit and hardware-encodes it to H.264.
+/// Captures one display with ScreenCaptureKit and feeds it to a VideoEncoder.
 ///
 /// ScreenCaptureKit only delivers a frame when something on screen changed, so
 /// an idle desktop produces no video at all. Two consequences are handled here:
@@ -22,8 +22,9 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
     private let out: Output
     private let queue = DispatchQueue(label: "remotemac.capture", qos: .userInteractive)
     private var stream: SCStream?
-    private var encoder: VTCompressionSession?
+    private var encoder: VideoEncoder?
     private var latest: CVPixelBuffer?
+    private var latestCapture: UInt64 = 0
     private var dirty = false
     private var wantKeyframe = true
     private var refine: DispatchWorkItem?
@@ -59,7 +60,10 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         config.showsCursor = true
         config.queueDepth = 5
 
-        try makeEncoder(width: w, height: h)
+        let encoder = try VideoEncoder(codec: codec, width: w, height: h)
+        encoder.onFormat = out.format
+        encoder.onFrame = out.frame
+        self.encoder = encoder
 
         let stream = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
@@ -91,7 +95,7 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         Task { try? await s?.stopCapture() }
         queue.async { [self] in
             refine?.cancel()
-            if let encoder { VTCompressionSessionInvalidate(encoder) }
+            encoder?.invalidate()
             encoder = nil
             latest = nil
         }
@@ -118,6 +122,7 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
               let raw = info.first?[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
               let pixels = sample.imageBuffer else { return }
         latest = pixels
+        latestCapture = UInt64(max(0, sample.presentationTimeStamp.seconds) * 1e9)
         dirty = true
         pump()
         scheduleRefine()
@@ -132,17 +137,8 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
     private func pump() {
         guard dirty, let pixels = latest, let encoder, out.canSend() else { return }
         dirty = false
-        var props: CFDictionary?
-        if wantKeyframe {
-            wantKeyframe = false
-            props = [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary
-        }
-        let pts = CMClockGetTime(CMClockGetHostTimeClock())
-        VTCompressionSessionEncodeFrame(encoder, imageBuffer: pixels, presentationTimeStamp: pts,
-                                        duration: .invalid, frameProperties: props, infoFlagsOut: nil) { [weak self] status, _, sample in
-            guard status == noErr, let sample else { return }
-            self?.emit(sample)
-        }
+        encoder.encode(pixels, captureNanos: latestCapture, forceKeyframe: wantKeyframe)
+        wantKeyframe = false
     }
 
     private func scheduleRefine() {
@@ -160,56 +156,6 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         queue.asyncAfter(deadline: .now() + 0.2, execute: item)
     }
 
-    private func emit(_ sample: CMSampleBuffer) {
-        let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[CFString: Any]]
-        let notSync = attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
-        let keyframe = !notSync
-
-        if keyframe, let fmt = sample.formatDescription {
-            // Always resend with a keyframe: a client that just connected needs it.
-            let sets = VideoFormat.parameterSets(of: fmt, codec: codec)
-            guard !sets.isEmpty else { return NSLog("RemoteMac: keyframe without parameter sets") }
-            out.format(VideoFormatPayload.encode(codec: codec, parameterSets: sets))
-        }
-
-        guard let block = sample.dataBuffer else { return }
-        let len = CMBlockBufferGetDataLength(block)
-        var payload = Data(count: 1 + len)
-        payload[0] = keyframe ? 1 : 0
-        payload.withUnsafeMutableBytes { buf in
-            _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: len, destination: buf.baseAddress! + 1)
-        }
-        out.frame(payload)
-    }
-
-    private func makeEncoder(width: Int, height: Int) throws {
-        let spec = [kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true] as CFDictionary
-        var session: VTCompressionSession?
-        let status = VTCompressionSessionCreate(allocator: nil, width: Int32(width), height: Int32(height),
-                                                codecType: codec == .hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264, encoderSpecification: spec,
-                                                imageBufferAttributes: nil, compressedDataAllocator: nil,
-                                                outputCallback: nil, refcon: nil, compressionSessionOut: &session)
-        guard status == noErr, let session else { throw StreamerError.encoder(status) }
-
-        // Screen content is mostly static text: spend bits per pixel, not per frame.
-        // HEVC gets the same sharpness for about 60% of the bits.
-        let perPixel = codec == .hevc ? 3 : 5
-        let bitrate = min(40_000_000, max(6_000_000, width * height * perPixel))
-        let props: [CFString: Any] = [
-            kVTCompressionPropertyKey_RealTime: true,
-            kVTCompressionPropertyKey_ProfileLevel: codec == .hevc ? kVTProfileLevel_HEVC_Main_AutoLevel : kVTProfileLevel_H264_ConstrainedHigh_AutoLevel,
-            kVTCompressionPropertyKey_AllowFrameReordering: false,
-            kVTCompressionPropertyKey_AverageBitRate: bitrate,
-            kVTCompressionPropertyKey_ExpectedFrameRate: 60,
-            kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: 20,
-        ]
-        for (k, v) in props {
-            let s = VTSessionSetProperty(session, key: k, value: v as CFTypeRef)
-            if s != noErr { NSLog("RemoteMac: encoder rejected \(k) = \(v): \(s)") }
-        }
-        VTCompressionSessionPrepareToEncodeFrames(session)
-        encoder = session
-    }
 }
 
 enum StreamerError: LocalizedError {

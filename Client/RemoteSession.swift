@@ -140,8 +140,8 @@ final class RemoteSession: ObservableObject {
                   let f = VideoFormat.description(codec: codec, parameterSets: sets) else { return fail(type) }
             video?.videoFormat(f)
         case .videoFrame:
-            guard !payload.isEmpty else { return fail(type) }
-            video?.videoFrame(payload.dropFirst(), keyframe: payload[payload.startIndex] & 1 == 1)
+            guard let frame = FramePayload.parse(payload) else { return fail(type) }
+            video?.videoFrame(frame.body, keyframe: frame.keyframe)
         case .cursor:
             guard let (x, y) = CursorPayload.decode(payload) else { return fail(type) }
             DispatchQueue.main.async { self.onCursor?(x, y) }

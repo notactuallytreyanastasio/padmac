@@ -16,7 +16,7 @@ enum MessageType: UInt8 {
     case screenInfo = 0x01
     /// `[u8 codec][u8 count]` then per parameter set `[u16 length][bytes]` (see VideoFormatPayload)
     case videoFormat = 0x02
-    /// `[u8 flags][4-byte length-prefixed NAL units]`, flags bit 0 = keyframe
+    /// See `FramePayload`.
     case videoFrame = 0x03
     /// UTF-8 text: why the host is about to close the connection.
     case error = 0x04
@@ -120,6 +120,28 @@ enum VideoFormatPayload {
         }
         guard i == b.count, !sets.isEmpty else { return nil }
         return (b[0] == 1 ? .hevc : .h264, sets)
+    }
+}
+
+/// `[u8 flags][u64 BE capture time, ns on the host clock][4-byte length-prefixed NAL units]`.
+/// Flags bit 0 = keyframe, bit 1 = refresh (a re-encode of an already sent
+/// capture, to sharpen it). The capture time lets a client on the same machine
+/// (the probe) measure glass-to-decode latency; the iPad ignores it.
+enum FramePayload {
+    static let headerSize = 9
+
+    static func header(keyframe: Bool, refresh: Bool = false, captureNanos: UInt64) -> Data {
+        var d = Data([(keyframe ? 1 : 0) | (refresh ? 2 : 0)])
+        withUnsafeBytes(of: captureNanos.bigEndian) { d.append(contentsOf: $0) }
+        return d
+    }
+
+    static func parse(_ data: Data) -> (keyframe: Bool, refresh: Bool, captureNanos: UInt64, body: Data)? {
+        guard data.count > headerSize else { return nil }
+        let b = data.startIndex
+        var t: UInt64 = 0
+        for i in 1...8 { t = t << 8 | UInt64(data[b + i]) }
+        return (data[b] & 1 == 1, data[b] & 2 == 2, t, data.dropFirst(headerSize))
     }
 }
 

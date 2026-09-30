@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import IOKit.pwr_mgt
 import Network
 
 /// One connected iPad: streams a display out, applies its input, reports the
@@ -12,11 +13,13 @@ final class HostSession {
     private var hello: Hello?
     private var streamer: ScreenStreamer?
     private var generation = 0
-    private let injector = InputInjector(displayID: CGMainDisplayID())
+    private let injector: InputInjector
+    private let inputLog: FileHandle?
     private var cursorTimer: DispatchSourceTimer?
     private var lastCursor: (Float, Float)?
     private var clipboard: ClipboardWatcher?
     private var screenObserver: NSObjectProtocol?
+    private var awake: PowerAssertion?
     private let decoder = JSONDecoder()
 
     var onStatus: ((String) -> Void)?
@@ -25,11 +28,28 @@ final class HostSession {
     init(connection: NWConnection) {
         peer = connection.endpoint.debugDescription
         conn = FramedConnection(connection, queue: queue)
+        // Development flags, for UI tests that must not move the real cursor:
+        //   -dryRunInput YES   track input state but post nothing
+        //   -inputLog <path>   append every received InputEvent as a JSON line
+        let d = UserDefaults.standard
+        var system = InputInjector.System.live
+        if d.bool(forKey: "dryRunInput") { system.post = { _ in } }
+        injector = InputInjector(displayID: CGMainDisplayID(), system: system)
+        inputLog = d.string(forKey: "inputLog").flatMap { path in
+            if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
+            let h = FileHandle(forWritingAtPath: path)
+            h?.seekToEndOfFile()
+            return h
+        }
     }
 
     func start() {
         conn.onMessage = { [weak self] type, payload in self?.handle(type, payload) }
         conn.onDrain = { [weak self] in self?.streamer?.drained() }
+        conn.onReady = { [weak self] in
+            // Past the TLS handshake, so this is a paired iPad: wake the display and keep it on.
+            self?.awake = PowerAssertion(reason: "Remote Mac: iPad connected")
+        }
         conn.onClose = { [weak self] error in
             guard let self else { return }
             self.teardown()
@@ -41,6 +61,7 @@ final class HostSession {
     func stop() { conn.cancel() }
 
     private func teardown() {
+        awake = nil
         streamer?.stop()
         streamer = nil
         generation += 1
@@ -65,6 +86,7 @@ final class HostSession {
             watchDisplayChanges()
         case .input:
             guard let event = try? decoder.decode(InputEvent.self, from: payload) else { return fail(.badPayload(type)) }
+            if let inputLog { inputLog.write(payload + Data("\n".utf8)) }
             injector.handle(event)
         case .requestKeyframe:
             streamer?.requestKeyframe()
@@ -202,5 +224,25 @@ final class ClipboardWatcher {
         guard !(pb.types ?? []).contains(where: { skip.contains($0.rawValue) }),
               let text = pb.string(forType: .string), !text.isEmpty, text.utf8.count < 1 << 20 else { return }
         send(text)
+    }
+}
+
+/// Wakes the display and holds it awake for as long as the object lives.
+/// Without this the Mac's idle timer blanks the screen mid-session, because
+/// synthesized input doesn't always count as user activity.
+final class PowerAssertion {
+    private var noSleep: IOPMAssertionID = 0
+    private var activity: IOPMAssertionID = 0
+    let held: Bool
+
+    init(reason: String) {
+        IOPMAssertionDeclareUserActivity(reason as CFString, kIOPMUserActiveLocal, &activity)
+        held = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                                           IOPMAssertionLevel(kIOPMAssertionLevelOn), reason as CFString, &noSleep) == kIOReturnSuccess
+    }
+
+    deinit {
+        if held { IOPMAssertionRelease(noSleep) }
+        if activity != 0 { IOPMAssertionRelease(activity) }
     }
 }

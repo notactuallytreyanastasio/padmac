@@ -29,10 +29,9 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     private var sticky = Set<UInt16>()
     private var dragging = false
 
-    // Zoom: screen point = offset + zoom * point in the video view's own bounds.
-    private var zoom: CGFloat = 1
-    private var offset = CGPoint.zero
-    private var pinchStart: (zoom: CGFloat, offset: CGPoint, centroid: CGPoint)?
+    private var viewport = Viewport(viewSize: .zero, content: .zero)
+    private var zoom: CGFloat { viewport.zoom }
+    private var pinchStart: (viewport: Viewport, centroid: CGPoint)?
     private var pinching = false
     private var zoomButton: UIButton!
     private var displayButton: UIButton!
@@ -49,18 +48,25 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         view.backgroundColor = .black
 
         video.layer.anchorPoint = .zero
+        // UI tests find the screen by this and read its state from the value.
+        video.isAccessibilityElement = true
+        video.accessibilityIdentifier = "remote-screen"
+        video.accessibilityLabel = "Mac screen"
+        video.accessibilityTraits = .allowsDirectInteraction
+        video.accessibilityValue = "connecting"
         video.needKeyframe = { [weak session] in session?.requestKeyframe() }
         view.addSubview(video)
         session.video = video
         session.onCursor = { [weak self] x, y in self?.follow(x, y) }
         session.onScreen = { [weak self] _ in
             guard let self else { return }
-            self.setZoom(1, offset: .zero)
+            self.viewport = Viewport(viewSize: self.view.bounds.size, content: self.videoRect)
             self.updateDisplayMenu()
             // Test hook: `-zoomFill YES` starts zoomed, for simulator screenshots.
             if UserDefaults.standard.bool(forKey: "zoomFill") {
-                self.setZoom(self.fillZoom, offset: .zero)
+                self.viewport.set(zoom: self.viewport.fillZoom, offset: .zero)
             }
+            self.applyZoom()
         }
 
         keys.frame = .zero
@@ -89,6 +95,9 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         video.bounds = CGRect(origin: .zero, size: view.bounds.size)
+        viewport.viewSize = view.bounds.size
+        viewport.content = videoRect
+        viewport.set(zoom: viewport.zoom, offset: viewport.offset) // re-clamp after rotation
         applyZoom()
     }
 
@@ -241,19 +250,16 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     // MARK: Zoom
 
     @objc private func pinch(_ g: UIPinchGestureRecognizer) {
-        let c = g.location(in: view)
         switch g.state {
         case .began:
-            pinchStart = (zoom, offset, c)
+            pinchStart = (viewport, g.location(in: view))
             pinching = false
         case .changed:
             guard let start = pinchStart else { return }
             if !pinching && abs(g.scale - 1) > 0.08 { pinching = true }
             guard pinching else { return }
-            let z = min(max(start.zoom * g.scale, 1), 8)
-            // Keep the point that was under the fingers under them, and let them pan.
-            let p = CGPoint(x: (start.centroid.x - start.offset.x) / start.zoom, y: (start.centroid.y - start.offset.y) / start.zoom)
-            setZoom(z, offset: CGPoint(x: c.x - z * p.x, y: c.y - z * p.y))
+            viewport.pinch(from: start.viewport, startCentroid: start.centroid, scale: g.scale, centroid: g.location(in: view))
+            applyZoom()
         default:
             pinchStart = nil
             pinching = false
@@ -261,48 +267,29 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     }
 
     @objc private func threeFingerPan(_ g: UIPanGestureRecognizer) {
-        let t = g.translation(in: view)
+        viewport.pan(by: g.translation(in: view))
         g.setTranslation(.zero, in: view)
-        setZoom(zoom, offset: CGPoint(x: offset.x + t.x, y: offset.y + t.y))
-    }
-
-    /// Zoom that makes the display fill the iPad's short side: the useful one for an ultrawide.
-    private var fillZoom: CGFloat {
-        let r = videoRect
-        guard r.width > 0, r.height > 0 else { return 1 }
-        return max(view.bounds.width / r.width, view.bounds.height / r.height)
-    }
-
-    private func setZoom(_ z: CGFloat, offset o: CGPoint) {
-        zoom = z
-        offset = o
         applyZoom()
     }
 
-    /// Clamp so the display never leaves a gap it could fill, then apply.
     private func applyZoom() {
-        let r = videoRect, W = view.bounds.width, H = view.bounds.height
-        func clamp(_ o: CGFloat, _ lo: CGFloat, _ len: CGFloat, _ span: CGFloat) -> CGFloat {
-            let size = zoom * len
-            if size <= span { return (span - size) / 2 - zoom * lo }
-            return min(max(o, span - zoom * (lo + len)), -zoom * lo)
-        }
-        offset = CGPoint(x: clamp(offset.x, r.minX, r.width, W), y: clamp(offset.y, r.minY, r.height, H))
         video.center = .zero
-        video.transform = CGAffineTransform(a: zoom, b: 0, c: 0, d: zoom, tx: offset.x, ty: offset.y)
-        zoomButton?.configuration?.image = UIImage(systemName: zoom > 1.01 ? "minus.magnifyingglass" : "plus.magnifyingglass")
+        video.transform = viewport.transform
+        zoomButton?.configuration?.image = UIImage(systemName: viewport.isZoomed ? "minus.magnifyingglass" : "plus.magnifyingglass")
+        updateAccessibilityValue()
+    }
+
+    private func updateAccessibilityValue() {
+        guard session.screen != nil else { return }
+        video.accessibilityValue = String(format: "streaming zoom=%.2f mode=%@", viewport.zoom, mode == .trackpad ? "trackpad" : "direct")
     }
 
     /// While zoomed, keep the Mac cursor inside the middle of the iPad screen.
     private func follow(_ x: Double, _ y: Double) {
-        guard zoom > 1.01, pinchStart == nil else { return }
-        let r = videoRect
-        let p = CGPoint(x: offset.x + zoom * (r.minX + CGFloat(x) * r.width), y: offset.y + zoom * (r.minY + CGFloat(y) * r.height))
-        let mx = view.bounds.width * 0.15, my = view.bounds.height * 0.15
-        var o = offset
-        if p.x < mx { o.x += mx - p.x } else if p.x > view.bounds.width - mx { o.x -= p.x - (view.bounds.width - mx) }
-        if p.y < my { o.y += my - p.y } else if p.y > view.bounds.height - my { o.y -= p.y - (view.bounds.height - my) }
-        if o != offset { setZoom(zoom, offset: o) }
+        guard pinchStart == nil else { return }
+        let before = viewport
+        viewport.follow(x: x, y: y)
+        if viewport != before { applyZoom() }
     }
 
     private func click(_ b: MouseButton) {
@@ -507,13 +494,13 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         zoomButton = button("plus.magnifyingglass", "Zoom") { [weak self] _ in
             guard let self else { return }
             // Toggle between the whole display and filling the iPad's short side, centred on the cursor's area.
-            if self.zoom > 1.01 {
-                self.setZoom(1, offset: .zero)
+            if self.viewport.isZoomed {
+                self.viewport.set(zoom: 1, offset: .zero)
             } else {
-                let z = self.fillZoom > 1.01 ? self.fillZoom : 2
-                let c = CGPoint(x: self.view.bounds.midX, y: self.view.bounds.midY)
-                self.setZoom(z, offset: CGPoint(x: c.x - z * c.x, y: c.y - z * c.y))
+                let z = self.viewport.fillZoom > 1.01 ? self.viewport.fillZoom : 2
+                self.viewport.zoom(to: z, keeping: CGPoint(x: self.view.bounds.midX, y: self.view.bounds.midY))
             }
+            self.applyZoom()
         }
         displayButton = button("display.2", "Display") { _ in }
         displayButton.showsMenuAsPrimaryAction = true
@@ -532,6 +519,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         modeButton = button("hand.point.up.left", "Touch mode") { [weak self] b in
             guard let self else { return }
             self.mode = self.mode == .trackpad ? .direct : .trackpad
+            self.updateAccessibilityValue()
             b.configuration?.image = UIImage(systemName: self.mode == .trackpad ? "hand.point.up.left" : "hand.tap")
             self.flash(self.mode == .trackpad ? "Trackpad: drag moves the cursor" : "Direct: tap where you want to click")
         }

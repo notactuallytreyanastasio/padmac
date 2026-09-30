@@ -1,4 +1,5 @@
 import ApplicationServices
+import ServiceManagement
 import SwiftUI
 
 @main
@@ -21,6 +22,7 @@ final class HostModel: ObservableObject {
     @Published var code: String
     @Published var screenRecording = CGPreflightScreenCaptureAccess()
     @Published var accessibility = AXIsProcessTrusted()
+    @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var connected: Bool { status.hasPrefix("Connected") }
 
@@ -59,6 +61,17 @@ final class HostModel: ObservableObject {
         restart()
     }
 
+    func disconnect() { server.disconnect() }
+
+    func setLaunchAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch {
+            status = "Launch at login: \(error.localizedDescription)"
+        }
+        launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
     func requestScreenRecording() { CGRequestScreenCaptureAccess() }
 
     func requestAccessibility() {
@@ -73,7 +86,13 @@ struct HostMenu: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Remote Mac").font(.headline)
-            Text(model.status).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top) {
+                Text(model.status).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if model.connected {
+                    Spacer()
+                    Button("Disconnect") { model.disconnect() }
+                }
+            }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Pairing code").font(.caption).foregroundStyle(.secondary)
@@ -90,6 +109,7 @@ struct HostMenu: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Divider()
+            Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
 
             HStack {
                 Button("New Code") { model.regenerateCode() }

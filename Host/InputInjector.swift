@@ -7,16 +7,37 @@ import CoreGraphics
 /// Posting a flagsChanged event for Command does not make the next synthesized
 /// key event carry the Command flag, so without this Cmd-C arrives as plain "c".
 final class InputInjector {
+    /// Where events go and where the world is read from. Tests replace it to
+    /// capture events instead of moving the real cursor.
+    struct System {
+        var post: (CGEvent) -> Void
+        var bounds: (CGDirectDisplayID) -> CGRect
+        var cursor: () -> CGPoint
+        var now: () -> TimeInterval
+        var doubleClickInterval: TimeInterval
+
+        static let live = System(
+            post: { $0.post(tap: .cghidEventTap) },
+            bounds: { CGDisplayBounds($0) },
+            cursor: { CGEvent(source: nil)?.location ?? .zero },
+            now: { ProcessInfo.processInfo.systemUptime },
+            doubleClickInterval: NSEvent.doubleClickInterval)
+    }
+
     var displayID: CGDirectDisplayID
+    private let system: System
     private let source = CGEventSource(stateID: .hidSystemState)
     private var buttons = Set<MouseButton>()
     private var heldKeys = Set<UInt16>()
     private var capsLock = false
     private var lastDown: (button: MouseButton, time: TimeInterval, at: CGPoint, count: Int)?
 
-    init(displayID: CGDirectDisplayID) { self.displayID = displayID }
+    init(displayID: CGDirectDisplayID, system: System = .live) {
+        self.displayID = displayID
+        self.system = system
+    }
 
-    private var bounds: CGRect { CGDisplayBounds(displayID) }
+    private var bounds: CGRect { system.bounds(displayID) }
 
     private var posted: (at: CGPoint, time: TimeInterval)?
 
@@ -28,8 +49,8 @@ final class InputInjector {
     /// burst trust our own last position, and only re-read the real one once the
     /// iPad has been idle long enough that the local mouse may have moved it.
     private var cursor: CGPoint {
-        if let p = posted, ProcessInfo.processInfo.systemUptime - p.time < 0.3 { return p.at }
-        return CGEvent(source: nil)?.location ?? .zero
+        if let p = posted, system.now() - p.time < 0.3 { return p.at }
+        return system.cursor()
     }
 
     private static let modifierFlags: [UInt16: CGEventFlags] = [
@@ -61,7 +82,7 @@ final class InputInjector {
             guard let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
                                   wheel1: Int32(dy.rounded()), wheel2: Int32(dx.rounded()), wheel3: 0) else { return }
             e.flags = flags
-            e.post(tap: .cghidEventTap)
+            system.post(e)
         case .key(let code, let down):
             key(code, down: down)
         case .text(let text):
@@ -85,18 +106,18 @@ final class InputInjector {
             buttons.contains(.middle) ? (.otherMouseDragged, .center) : (.mouseMoved, .left)
         guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: p, mouseButton: button) else { return }
         e.flags = flags
-        e.post(tap: .cghidEventTap)
-        posted = (p, ProcessInfo.processInfo.systemUptime)
+        system.post(e)
+        posted = (p, system.now())
     }
 
     private func press(_ button: MouseButton, down: Bool) {
         if down { buttons.insert(button) } else if buttons.remove(button) == nil { return }
         let p = cursor
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = system.now()
 
         var count = 1
         if down {
-            if let last = lastDown, last.button == button, now - last.time < NSEvent.doubleClickInterval,
+            if let last = lastDown, last.button == button, now - last.time < system.doubleClickInterval,
                hypot(last.at.x - p.x, last.at.y - p.y) < 5 {
                 count = last.count + 1
             }
@@ -116,21 +137,26 @@ final class InputInjector {
         guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: p, mouseButton: cg) else { return }
         e.setIntegerValueField(.mouseEventClickState, value: Int64(count))
         e.flags = flags
-        e.post(tap: .cghidEventTap)
+        system.post(e)
     }
 
     private func key(_ code: UInt16, down: Bool) {
+        var isRepeat = false
         if code == 57 { // caps lock toggles on press
             if down { capsLock.toggle() } else { return }
         } else if down {
-            heldKeys.insert(code)
+            // The iPad repeats held keys by resending key-down.
+            isRepeat = !heldKeys.insert(code).inserted
         } else if heldKeys.remove(code) == nil {
             return
         }
+        let isModifier = Self.modifierFlags[code] != nil || code == 57
+        if isRepeat && isModifier { return }
         guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { return }
-        if Self.modifierFlags[code] != nil || code == 57 { e.type = .flagsChanged }
+        if isModifier { e.type = .flagsChanged }
+        if isRepeat { e.setIntegerValueField(.keyboardEventAutorepeat, value: 1) }
         e.flags = flags
-        e.post(tap: .cghidEventTap)
+        system.post(e)
     }
 
     private func type(_ text: String) {
@@ -146,7 +172,7 @@ final class InputInjector {
                 for down in [true, false] {
                     guard let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { continue }
                     chunk.withUnsafeBufferPointer { e.keyboardSetUnicodeString(stringLength: $0.count, unicodeString: $0.baseAddress) }
-                    e.post(tap: .cghidEventTap)
+                    system.post(e)
                 }
                 i += chunk.count
             }

@@ -35,6 +35,8 @@ var start = Date()
 var wrote = false
 var failures = 0
 var clipboardReceived: [String] = []
+var latencies: [Double] = []
+var worst: [(ms: Double, index: Int, bytes: Int, key: Bool)] = []
 
 func check(_ ok: Bool, _ what: String) {
     if !ok { failures += 1 }
@@ -155,16 +157,25 @@ conn.onMessage = { type, payload in
         format = f
     case .videoFrame:
         frames += 1; bytes += payload.count
-        if payload[payload.startIndex] & 1 == 1 { keyframes += 1 }
+        if FramePayload.parse(payload)?.keyframe == true { keyframes += 1 }
+        guard let frame = FramePayload.parse(payload) else { print("FAIL bad frame payload"); exit(1) }
         guard let format, let decoder,
-              let sb = VideoFormat.sampleBuffer(payload.dropFirst(), format: format, displayImmediately: false) else {
+              let sb = VideoFormat.sampleBuffer(frame.body, format: format, displayImmediately: false) else {
             print("frame \(frames): no decoder yet"); return
         }
         let status = VTDecompressionSessionDecodeFrame(decoder, sampleBuffer: sb, flags: [], infoFlagsOut: nil) { status, _, image, _, _ in
             guard status == noErr, let image else { print("decode error \(status)"); return }
             decoded += 1
+            let now = UInt64(CMClockGetTime(CMClockGetHostTimeClock()).seconds * 1e9)
+            if !frame.refresh, frame.captureNanos > 0, now > frame.captureNanos {
+                let ms = Double(now - frame.captureNanos) / 1e6
+                latencies.append(ms)
+                worst.append((ms, frames, payload.count, frame.keyframe))
+            }
             // The refine passes land ~0.6s after the last change; wait for one of them.
-            if !wrote && Date().timeIntervalSince(start) > 1.2 { wrote = true; writePNG(image) }
+            // Encoding a 5120-wide PNG takes ~230ms; doing it here stalled decoding
+            // and showed up as a fake latency spike in the numbers below.
+            if !wrote && Date().timeIntervalSince(start) > 1.2 { wrote = true; DispatchQueue.global().async { writePNG(image) } }
         }
         if status != noErr { print("decode submit error \(status)") }
     case .cursor:
@@ -186,6 +197,18 @@ DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
     print(String(format: "%d frames (%d key), %d decoded, %.1f KB avg, %.2f Mbit/s over %.1fs, %d cursor reports",
                  frames, keyframes, decoded, Double(bytes) / Double(max(frames, 1)) / 1024, Double(bytes) * 8 / secs / 1e6, secs, cursorReports))
     check(frames > 0 && decoded >= frames - 2, "video decodes")
+    if !latencies.isEmpty {
+        let l = latencies.sorted()
+        func pct(_ p: Double) -> Double { l[min(l.count - 1, Int(Double(l.count) * p))] }
+        print(String(format: "capture-to-decoded latency: p50 %.1fms  p95 %.1fms  max %.1fms  (n=%d, excludes Wi-Fi)", pct(0.5), pct(0.95), l.last!, l.count))
+        // Generous: this Mac measures ~19ms. A regression to a queue building up shows as 100+.
+        check(pct(0.5) < 50, String(format: "median latency %.1fms under 50ms", pct(0.5)))
+        if flags.contains("--latency") {
+            for w in worst.sorted(by: { $0.ms > $1.ms }).prefix(12) {
+                print(String(format: "  frame #%d  %.1fms  %d KB%@", w.index, w.ms, w.bytes / 1024, w.key ? "  keyframe" : ""))
+            }
+        }
+    }
     restoreClipboard()
     exit(failures == 0 ? 0 : 1)
 }

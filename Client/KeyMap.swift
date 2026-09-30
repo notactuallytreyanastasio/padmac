@@ -1,4 +1,4 @@
-import UIKit
+import Foundation
 
 /// USB HID usage (what UIKey.keyCode reports) to Mac virtual key code (kVK_*).
 enum KeyMap {

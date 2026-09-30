@@ -36,6 +36,11 @@ final class HostServer {
         session = nil
     }
 
+    /// Hang up on the connected iPad, if any. It will try to reconnect.
+    func disconnect() {
+        queue.async { self.session?.stop() }
+    }
+
     private func accept(_ connection: NWConnection) {
         session?.stop()
         let s = HostSession(connection: connection)
