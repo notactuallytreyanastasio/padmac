@@ -65,6 +65,8 @@ final class VideoEncoder {
         // Encoder timestamps must only increase, and a refresh re-encodes an old
         // capture, so the capture time travels beside the frame instead.
         let pts = CMClockGetTime(CMClockGetHostTimeClock())
+        let called = UInt64(pts.seconds * 1e9)
+        defer { if Trace.latency { Trace.record("encode call (blocking)", since: called) } }
         VTCompressionSessionEncodeFrame(session, imageBuffer: pixels, presentationTimeStamp: pts,
                                         duration: .invalid, frameProperties: props, infoFlagsOut: nil) { [weak self] status, _, sample in
             guard let self else { return }
@@ -79,6 +81,7 @@ final class VideoEncoder {
     }
 
     private func emit(_ sample: CMSampleBuffer, captured: UInt64, refresh: Bool) {
+        if Trace.latency && !refresh { Trace.record("capture->encoded", since: captured) }
         let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[CFString: Any]]
         let keyframe = !(attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
 

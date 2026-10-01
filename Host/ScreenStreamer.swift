@@ -21,6 +21,11 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private let out: Output
     private let queue = DispatchQueue(label: "remotemac.capture", qos: .userInteractive)
+    /// Encoding blocks (30ms a frame at 5120x1440 under load), so it gets its own
+    /// queue. On the capture queue it backed ScreenCaptureKit up to its full
+    /// queue depth: every frame arrived ~150ms late instead of the newest ~30ms late.
+    private let encodeQueue = DispatchQueue(label: "remotemac.encode", qos: .userInteractive)
+    private var encoding = false
     private var stream: SCStream?
     private var encoder: VideoEncoder?
     private var latest: CVPixelBuffer?
@@ -123,6 +128,7 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
               let pixels = sample.imageBuffer else { return }
         latest = pixels
         latestCapture = UInt64(max(0, sample.presentationTimeStamp.seconds) * 1e9)
+        if Trace.latency { Trace.record("capture->delivered", since: latestCapture) }
         dirty = true
         pump()
         scheduleRefine()
@@ -134,11 +140,21 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: Encoding
 
+    /// Encode the newest frame, unless an encode is running: then it'll take
+    /// whatever is newest when it finishes, and the frames in between are dropped.
     private func pump() {
-        guard dirty, let pixels = latest, let encoder, out.canSend() else { return }
+        guard !encoding, dirty, let pixels = latest, let encoder, out.canSend() else { return }
         dirty = false
-        encoder.encode(pixels, captureNanos: latestCapture, forceKeyframe: wantKeyframe)
+        encoding = true
+        let capture = latestCapture, key = wantKeyframe
         wantKeyframe = false
+        encodeQueue.async { [weak self] in
+            encoder.encode(pixels, captureNanos: capture, forceKeyframe: key)
+            self?.queue.async {
+                self?.encoding = false
+                self?.pump()
+            }
+        }
     }
 
     private func scheduleRefine() {
@@ -170,3 +186,23 @@ enum StreamerError: LocalizedError {
     }
 }
 
+
+/// `-traceLatency YES`: logs where time goes between capture and the wire,
+/// as a median every 30 samples per stage.
+enum Trace {
+    static let latency = UserDefaults.standard.bool(forKey: "traceLatency")
+    private static var samples: [String: [Double]] = [:]
+    private static let lock = NSLock()
+
+    static func record(_ stage: String, since nanos: UInt64) {
+        let now = UInt64(CMClockGetTime(CMClockGetHostTimeClock()).seconds * 1e9)
+        guard now > nanos else { return }
+        lock.lock(); defer { lock.unlock() }
+        samples[stage, default: []].append(Double(now - nanos) / 1e6)
+        if let s = samples[stage], s.count >= 30 {
+            let sorted = s.sorted()
+            NSLog("RemoteMac trace: %@ p50 %.1fms p95 %.1fms", stage, sorted[15], sorted[28])
+            samples[stage] = []
+        }
+    }
+}
