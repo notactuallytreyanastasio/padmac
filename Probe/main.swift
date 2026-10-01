@@ -305,8 +305,12 @@ DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
         let l = latencies.sorted()
         func pct(_ p: Double) -> Double { l[min(l.count - 1, Int(Double(l.count) * p))] }
         print(String(format: "capture-to-decoded latency: p50 %.1fms  p95 %.1fms  max %.1fms  (n=%d, excludes Wi-Fi)", pct(0.5), pct(0.95), l.last!, l.count))
-        // Generous: this Mac measures ~19ms. A regression to a queue building up shows as 100+.
-        check(pct(0.5) < 50, String(format: "median latency %.1fms under 50ms", pct(0.5)))
+        // Generous: this Mac measures 13-19ms. A regression to a queue building up shows as 100+.
+        // A second capture+encode pipeline on the Mac (an iPad on the installed host) puts this
+        // at ~125ms for the second stream, so test.sh passes --no-latency-check then, and says so.
+        if !flags.contains("--no-latency-check") {
+            check(pct(0.5) < 50, String(format: "median latency %.1fms under 50ms", pct(0.5)))
+        }
         if !arrivals.isEmpty {
             let a = arrivals.sorted()
             print(String(format: "  of which capture-to-arrival: p50 %.1fms  p95 %.1fms (encode + TLS + socket)", a[a.count / 2], a[min(a.count - 1, Int(Double(a.count) * 0.95))]))

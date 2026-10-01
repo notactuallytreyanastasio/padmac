@@ -129,10 +129,12 @@ time goes between capture and the wire.
 - **iPadOS keeps some shortcuts.** ⌘-Tab, ⌘-Space and Globe shortcuts go to the iPad, not the Mac.
 - **Clipboard has no files**, only text and images.
 - **The Mac still plays its own sound** while streaming it.
-- **Latency with two streams running is unexplained.** With the iPad connected,
-  a second stream (the probe) measures ~125 ms capture-to-decode. With one
-  stream it measured 16–19 ms. The same encoder outside the host takes 26 ms
-  under the same load. See the commit log for what was ruled out.
+- **Two streams at once are slow.** While an iPad is connected, a second
+  stream from the same Mac (the probe, in testing) measures ~125 ms
+  capture-to-decode instead of 13–19 ms. One stream, the normal case, is
+  unaffected. `test.sh` detects a live session and skips only the latency
+  check, with a note. Why two real capture pipelines interfere is not known:
+  two synthetic encoders side by side don't.
 - **Locked-screen login is untested.** Typing your password at the lock
   screen from the iPad may be blocked by macOS secure input.
 - **Local network only by design.** The 40-bit code resists online guessing,

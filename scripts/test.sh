@@ -59,7 +59,13 @@ step "Start dry-run host on :$PORT (input is logged, not posted)"
 start_host -dryRunInput YES && print "  pid $host_pid"
 
 step "Probe: real capture -> HEVC -> TLS -> decode, and a stream restart"
-if $DD/Build/Products/Debug/probe 127.0.0.1:$PORT $CODE $DD/probe.png --displays | sed 's/^/  /'; then :; else failed+=probe; fi
+latency_flag=()
+if netstat -an -p tcp 2>/dev/null | grep -q '\.47428 .*ESTABLISHED'; then
+  # Two capture+encode pipelines on one Mac: the second measures ~125ms instead of ~15ms.
+  print "  note: a device is connected to the installed host, so the latency check is skipped (it would read ~125ms)"
+  latency_flag=(--no-latency-check)
+fi
+if $DD/Build/Products/Debug/probe 127.0.0.1:$PORT $CODE $DD/probe.png --displays $latency_flag | sed 's/^/  /'; then :; else failed+=probe; fi
 
 step "iPad unit and UI tests on $SIM"
 TEST_RUNNER_REMOTEMAC_HOST=127.0.0.1:$PORT TEST_RUNNER_REMOTEMAC_INPUT_LOG=$LOG TEST_RUNNER_REMOTEMAC_CODE=$CODE \
