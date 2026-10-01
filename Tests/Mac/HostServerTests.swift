@@ -76,6 +76,33 @@ final class HostServerTests: XCTestCase {
         wait(for: [closed], timeout: 5)
     }
 
+    func testAConnectionWithoutTheCodeCannotKickTheCurrentClientOff() throws {
+        let (current, ready) = client()
+        var closed = false
+        current.onClose = { _ in closed = true }
+        current.start()
+        wait(for: [ready], timeout: 5)
+
+        // A wrong code, and a raw TCP connect that never handshakes.
+        let wrong = FramedConnection(NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!,
+                                                  using: PairingSecurity.parameters(code: "WRONGCOD")), queue: queue)
+        let rejected = expectation(description: "wrong code rejected")
+        wrong.onClose = { _ in rejected.fulfill() }
+        wrong.start()
+        clients.append(wrong)
+        let raw = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+        raw.start(queue: queue)
+        wait(for: [rejected], timeout: 5)
+        Thread.sleep(forTimeInterval: 0.5)
+        raw.cancel()
+
+        XCTAssertFalse(closed, "the paired client must stay connected")
+        current.send(.input, json: InputEvent.releaseAll)
+        let deadline = Date().addingTimeInterval(3)
+        while loggedEvents().isEmpty && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        XCTAssertEqual(loggedEvents(), [.releaseAll], "and still be the one in control")
+    }
+
     func testANewClientReplacesTheOldAndTellsItWhy() throws {
         let (first, r1) = client()
         let firstClosed = expectation(description: "first closed")

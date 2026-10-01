@@ -24,6 +24,8 @@ final class HostSession {
 
     var onStatus: ((String) -> Void)?
     var onEnd: ((HostSession, Error?) -> Void)?
+    /// The TLS handshake succeeded: this peer knows the pairing code.
+    var onAuthenticated: ((HostSession) -> Void)?
 
     init(connection: NWConnection) {
         peer = connection.endpoint.debugDescription
@@ -47,8 +49,10 @@ final class HostSession {
         conn.onMessage = { [weak self] type, payload in self?.handle(type, payload) }
         conn.onDrain = { [weak self] in self?.streamer?.drained() }
         conn.onReady = { [weak self] in
+            guard let self else { return }
+            self.onAuthenticated?(self)
             // Past the TLS handshake, so this is a paired iPad: wake the display and keep it on.
-            self?.awake = PowerAssertion(reason: "Remote Mac: iPad connected")
+            self.awake = PowerAssertion(reason: "Remote Mac: iPad connected")
         }
         conn.onClose = { [weak self] error in
             guard let self else { return }

@@ -6,6 +6,8 @@ import Network
 final class HostServer {
     private var listener: NWListener?
     private var session: HostSession?
+    /// Connections still in the TLS handshake. Nothing else holds them.
+    private var handshaking: [HostSession] = []
     private let queue = DispatchQueue(label: "remotemac.listener")
 
     var onStatus: ((String) -> Void)?
@@ -34,6 +36,8 @@ final class HostServer {
         listener = nil
         session?.stop()
         session = nil
+        handshaking.forEach { $0.stop() }
+        handshaking = []
     }
 
     /// Hang up on the connected iPad, if any. It will try to reconnect.
@@ -42,18 +46,30 @@ final class HostServer {
     }
 
     private func accept(_ connection: NWConnection) {
-        session?.supersede(by: connection.endpoint.debugDescription)
+        // Don't touch the current session until the newcomer has passed the TLS
+        // handshake. Replacing it on accept let anyone who could reach the port
+        // kick the iPad off with a bare TCP connect, no pairing code needed.
         let s = HostSession(connection: connection)
         s.onStatus = { [weak self] in self?.onStatus?($0) }
+        s.onAuthenticated = { [weak self] new in
+            self?.queue.async {
+                guard let self else { return }
+                self.handshaking.removeAll { $0 === new }
+                self.session?.supersede(by: connection.endpoint.debugDescription)
+                self.session = new
+            }
+        }
         s.onEnd = { [weak self] ended, error in
             self?.queue.async {
-                guard let self, self.session === ended else { return }
+                guard let self else { return }
+                self.handshaking.removeAll { $0 === ended }
+                guard self.session === ended else { return }
                 self.session = nil
                 let why = error.map { ": \($0.localizedDescription)" } ?? ""
                 self.onStatus?("Disconnected\(why). Waiting for iPad on port \(self.port)")
             }
         }
-        session = s
+        queue.async { self.handshaking.append(s) }
         s.start()
     }
 }
