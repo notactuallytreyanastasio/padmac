@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "${0:A:h}/.."
 xcodegen generate -q
-ipad=$(xcrun devicectl list devices 2>/dev/null | awk '/iPad/ && /available/ {for(i=1;i<=NF;i++) if ($i ~ /^[0-9A-F-]{36}$/) print $i}' | head -1)
+ipad=$(xcrun devicectl list devices 2>/dev/null | awk '/iPad/ && (/available/ || /connected/) {for(i=1;i<=NF;i++) if ($i ~ /^[0-9A-F-]{36}$/) print $i}' | head -1)
 if [[ -z "$ipad" ]]; then
   echo "No iPad found. Connected devices:" >&2
   xcrun devicectl list devices >&2
