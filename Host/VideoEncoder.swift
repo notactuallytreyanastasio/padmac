@@ -16,7 +16,7 @@ final class VideoEncoder {
     private var session: VTCompressionSession?
     private var lastCapture: UInt64?
 
-    init(codec: VideoCodec, width: Int, height: Int) throws {
+    init(codec: VideoCodec, width: Int, height: Int, quality: StreamQuality = .full) throws {
         self.codec = codec
         self.width = width
         self.height = height
@@ -30,15 +30,13 @@ final class VideoEncoder {
         guard status == noErr, let s else { throw StreamerError.encoder(status) }
 
         // Screen content is mostly static text: spend bits per pixel, not per frame.
-        // HEVC gets the same sharpness for about 60% of the bits.
-        let perPixel = codec == .hevc ? 3 : 5
-        let bitrate = min(40_000_000, max(6_000_000, width * height * perPixel))
+        let bitrate = quality.bitrate(width: width, height: height, codec: codec)
         let props: [CFString: Any] = [
             kVTCompressionPropertyKey_RealTime: true,
             kVTCompressionPropertyKey_ProfileLevel: codec == .hevc ? kVTProfileLevel_HEVC_Main_AutoLevel : kVTProfileLevel_H264_ConstrainedHigh_AutoLevel,
             kVTCompressionPropertyKey_AllowFrameReordering: false,
             kVTCompressionPropertyKey_AverageBitRate: bitrate,
-            kVTCompressionPropertyKey_ExpectedFrameRate: 60,
+            kVTCompressionPropertyKey_ExpectedFrameRate: quality.framesPerSecond,
             kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: 20,
         ]
         for (k, v) in props {

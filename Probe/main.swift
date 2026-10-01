@@ -9,13 +9,13 @@ import UniformTypeIdentifiers
 import VideoToolbox
 
 // End-to-end check of a running host, from the client's side of the wire:
-//   probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys]
+//   probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys] [--quality]
 // Connects over TLS-PSK, decodes video with VideoToolbox, writes a sharp frame
 // as PNG, and prints PASS/FAIL for each optional check. Run it on the host Mac:
 // the checks read the real cursor and pasteboard back.
 
 let args = CommandLine.arguments
-guard args.count >= 3 else { print("usage: probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys]"); exit(2) }
+guard args.count >= 3 else { print("usage: probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys] [--quality]"); exit(2) }
 let hostPort = args[1].split(separator: ":")
 let host = String(hostPort[0]), port = hostPort.count > 1 ? UInt16(hostPort[1])! : Wire.port
 let code = args[2]
@@ -233,7 +233,8 @@ conn.onReady = {
     print("TLS ready")
     conn.send(.hello, json: Hello(clientName: "probe", maxWidth: 8192, maxHeight: 8192,
                                   codecs: flags.contains("--h264") ? [.h264] : [.hevc, .h264],
-                                  audio: flags.contains("--audio")))
+                                  audio: flags.contains("--audio"),
+                                  quality: flags.contains("--quality") ? .saver : nil))
 }
 conn.onClose = { error in
     print("closed: \(error.map { "\($0)" } ?? "clean")")
@@ -252,6 +253,16 @@ conn.onMessage = { type, payload in
             if flags.contains("--clipboard") { after(2.5, runClipboardChecks) }
             if flags.contains("--swipe") { after(0.5) { runSwipeChecks(info) } }
             if flags.contains("--keys") { after(0.5, runKeyChecks) }
+            if flags.contains("--quality") {
+                check(info.streamWidth <= 1920, "data saver streams at most 1920 wide: \(info.streamWidth)x\(info.streamHeight)")
+                let startBytes = bytes
+                after(3.0) {
+                    // Measured over 3s; the refine passes and a keyframe ride on top of the average.
+                    let mbps = Double(bytes - startBytes) * 8 / 3 / 1e6
+                    check(mbps < StreamQuality.saver.maxBitrate.mbps * 1.5, String(format: "data saver carried %.2f Mbit/s (ceiling %.1f)", mbps, StreamQuality.saver.maxBitrate.mbps))
+                    conn.send(.setQuality, json: StreamQuality.full)
+                }
+            }
             if flags.contains("--audio") {
                 // Something for the Mac to play; the host must capture it.
                 after(1.0) {
@@ -269,6 +280,8 @@ conn.onMessage = { type, payload in
                     conn.send(.selectDisplay, json: SelectDisplay(displayID: target.id))
                 }
             }
+        } else if flags.contains("--quality") && infos.count == 2 {
+            check(info.streamWidth > 1920 || info.screenWidth * 2 <= 1920, "switching to full restarts at \(info.streamWidth)x\(info.streamHeight)")
         } else if flags.contains("--displays") {
             let expectSwitch = infos[0].displays.count > 1
             check(expectSwitch ? info.displayID != infos[0].displayID : true, "stream restarted on \(info.displayName)")
@@ -338,7 +351,7 @@ conn.onMessage = { type, payload in
 }
 conn.start()
 
-let duration = flags.contains("--clipboard") ? 8.5 : flags.contains("--keys") ? 8.5 : flags.contains("--swipe") || flags.contains("--audio") ? 6.5 : 4.5
+let duration = flags.contains("--clipboard") || flags.contains("--quality") ? 8.5 : flags.contains("--keys") ? 8.5 : flags.contains("--swipe") || flags.contains("--audio") ? 6.5 : 4.5
 DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
     let secs = Date().timeIntervalSince(start)
     print(String(format: "%d frames (%d key), %d decoded, %.1f KB avg, %.2f Mbit/s over %.1fs, %d cursor reports",
@@ -378,3 +391,7 @@ DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
     exit(failures == 0 ? 0 : 1)
 }
 dispatchMain()
+
+extension Int {
+    var mbps: Double { Double(self) / 1e6 }
+}

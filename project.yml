@@ -92,7 +92,7 @@ targets:
   RemoteMacClientTests:
     type: bundle.unit-test
     platform: iOS
-    sources: [Tests/Client, Client/Viewport.swift, Client/SwipeTracker.swift, Client/PointerAcceleration.swift, Client/AudioPlayer.swift, Client/KeyRemapper.swift, Shared/Wire.swift]
+    sources: [Tests/Client, Client/Viewport.swift, Client/SwipeTracker.swift, Client/PointerAcceleration.swift, Client/AudioPlayer.swift, Client/KeyRemapper.swift, Client/RateMeter.swift, Shared/Wire.swift]
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

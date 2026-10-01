@@ -19,6 +19,7 @@ without the code fails the handshake (`-9820: bad MAC`).
 ```sh
 brew install xcodegen          # if needed
 ./scripts/install-host.sh      # builds, copies to /Applications, launches
+./scripts/keepalive-host.sh    # optional: launchd starts it at login, restarts it if it exits
 ```
 
 Click the display icon in the menu bar. Grant **Screen Recording** and
@@ -66,6 +67,12 @@ a password manager marks as concealed stays on the Mac. Going the other way,
 the toolbar's paste button puts the iPad clipboard (text or image) on the Mac
 and presses ⌘V. It's a system paste control, so iPadOS doesn't ask
 permission each time.
+
+Quality: the gauge button picks **Full** (native, up to 40 Mbit/s, 60 fps),
+**Balanced** (2560 wide, 8 Mbit/s, 60 fps) or **Data saver** (1920 wide,
+2.5 Mbit/s, 30 fps). It switches without reconnecting, and the menu shows
+what the link is carrying right now. Audio adds 1.5 Mbit/s; turn it off on
+a tight link.
 
 Away from home: there's nothing to set up beyond Tailscale on both devices.
 Bonjour doesn't cross Tailscale, so connect **by address** using the Mac's

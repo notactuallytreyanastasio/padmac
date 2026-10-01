@@ -42,7 +42,7 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
 
     init(output: Output) { self.out = output }
 
-    func start(displayID wanted: CGDirectDisplayID?, maxWidth: Int, maxHeight: Int, codecs: [VideoCodec], audio: Bool = false) async throws -> ScreenInfo {
+    func start(displayID wanted: CGDirectDisplayID?, maxWidth: Int, maxHeight: Int, codecs: [VideoCodec], audio: Bool = false, quality: StreamQuality = .full) async throws -> ScreenInfo {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first(where: { $0.displayID == (wanted ?? CGMainDisplayID()) })
                 ?? content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else {
@@ -57,14 +57,13 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         let mode = CGDisplayCopyDisplayMode(display.displayID)
         let pixelW = Double(mode?.pixelWidth ?? display.width * 2)
         let pixelH = Double(mode?.pixelHeight ?? display.height * 2)
-        let limit = codec == .h264 ? 4096.0 : 8192.0
-        let fit = min(1, Double(maxWidth) / pixelW, Double(maxHeight) / pixelH, limit / pixelW, limit / pixelH)
-        let w = Int(pixelW * fit) & ~1, h = Int(pixelH * fit) & ~1
+        let (w, h) = quality.streamSize(display: (pixelW, pixelH), clientMax: (maxWidth, maxHeight),
+                                        codecLimit: codec == .h264 ? 4096 : 8192)
 
         let config = SCStreamConfiguration()
         config.width = w
         config.height = h
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(quality.framesPerSecond))
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.showsCursor = true
         config.queueDepth = 5
@@ -76,7 +75,7 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
             config.excludesCurrentProcessAudio = true
         }
 
-        let encoder = try VideoEncoder(codec: codec, width: w, height: h)
+        let encoder = try VideoEncoder(codec: codec, width: w, height: h, quality: quality)
         encoder.onFormat = out.format
         encoder.onFrame = out.frame
         self.encoder = encoder

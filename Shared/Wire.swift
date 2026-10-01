@@ -39,6 +39,8 @@ enum MessageType: UInt8 {
     case selectDisplay = 0x13
     /// One byte: 1 to receive audio, 0 to stop (the iPad's speaker button).
     case audioEnabled = 0x14
+    /// JSON `StreamQuality` (a bare string). The host restarts the stream at that quality.
+    case setQuality = 0x15
 }
 
 enum VideoCodec: String, Codable {
@@ -77,10 +79,63 @@ struct Hello: Codable {
     var displayID: UInt32?
     /// Stream the Mac's sound. Absent means no.
     var audio: Bool?
+    /// Absent means full.
+    var quality: StreamQuality?
 }
 
 struct SelectDisplay: Codable {
     var displayID: UInt32
+}
+
+/// Stream presets for the link you're on. Full is for home Wi-Fi; the others
+/// keep a hotel network or a phone hotspot usable. Audio is 1.5 Mbit/s on top
+/// of these, uncompressed; turn it off on a tight link.
+enum StreamQuality: String, Codable, CaseIterable {
+    case full, balanced, saver
+
+    var title: String {
+        switch self {
+        case .full: "Full"
+        case .balanced: "Balanced"
+        case .saver: "Data saver"
+        }
+    }
+
+    /// Widest stream, in pixels (nil: the display's own).
+    var maxWidth: Int? {
+        switch self {
+        case .full: nil
+        case .balanced: 2560
+        case .saver: 1920
+        }
+    }
+
+    /// Ceiling on the encoder's average bitrate.
+    var maxBitrate: Int {
+        switch self {
+        case .full: 40_000_000
+        case .balanced: 8_000_000
+        case .saver: 2_500_000
+        }
+    }
+
+    var framesPerSecond: Int { self == .saver ? 30 : 60 }
+
+    /// Stream size for a display of `pixels`, within the client's limits and
+    /// the codec's. Keeps the aspect ratio; even dimensions, as encoders need.
+    func streamSize(display pixels: (w: Double, h: Double), clientMax: (w: Int, h: Int), codecLimit: Double) -> (w: Int, h: Int) {
+        var fit = min(1, Double(clientMax.w) / pixels.w, Double(clientMax.h) / pixels.h, codecLimit / pixels.w, codecLimit / pixels.h)
+        if let mw = maxWidth { fit = min(fit, Double(mw) / pixels.w) }
+        return (Int(pixels.w * fit) & ~1, Int(pixels.h * fit) & ~1)
+    }
+
+    /// Average bitrate for a stream of this size: bits per pixel scaled to the
+    /// codec (HEVC needs about 60% of H.264's), floored so small streams stay
+    /// sharp, and never over this preset's ceiling.
+    func bitrate(width: Int, height: Int, codec: VideoCodec) -> Int {
+        let perPixel = codec == .hevc ? 3 : 5
+        return min(maxBitrate, max(min(6_000_000, maxBitrate), width * height * perPixel))
+    }
 }
 
 enum MouseButton: Int, Codable {

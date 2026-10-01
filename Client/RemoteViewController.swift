@@ -619,6 +619,25 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         paste.accessibilityLabel = "Paste iPad clipboard on the Mac"
         toolbar.addArrangedSubview(paste)
 
+        let quality = button("gauge.with.dots.needle.67percent", "Stream quality") { _ in }
+        quality.showsMenuAsPrimaryAction = true
+        // Built when opened, so the numbers are current.
+        quality.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in
+            guard let self else { return done([]) }
+            let s = self.session.linkStats()
+            let reading = String(format: "Now: %.1f Mbit/s video, %.0f fps · %.1f Mbit/s total", s.videoMbps, s.fps, s.totalMbps)
+            let choices = StreamQuality.allCases.map { q in
+                let limit = q.maxWidth.map { "\($0) wide" } ?? "native"
+                return UIAction(title: q.title,
+                                subtitle: String(format: "%@, up to %g Mbit/s, %d fps", limit, Double(q.maxBitrate) / 1e6, q.framesPerSecond),
+                                state: q == self.session.quality ? .on : .off) { [weak self] _ in
+                    self?.session.setQuality(q)
+                    self?.flash("Quality: \(q.title)")
+                }
+            }
+            done([UIMenu(title: reading, options: .displayInline, children: choices)])
+        }])
+
         let speaker = { (on: Bool) in on ? "speaker.wave.2" : "speaker.slash" }
         _ = button(speaker(session.audioEnabled), "Sound") { [weak self] b in
             guard let self else { return }

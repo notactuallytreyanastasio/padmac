@@ -58,6 +58,37 @@ final class WireTests: XCTestCase {
         XCTAssertEqual(AudioPayload.decode(data.dropFirst(0))?.samples.count, 10, "slices decode")
     }
 
+    func testQualityPresetsOnThisMacsDisplays() {
+        let lg = (w: 5120.0, h: 1440.0), builtIn = (w: 3024.0, h: 1964.0)
+        let ipad = (w: 8192, h: 8192)
+        func size(_ q: StreamQuality, _ d: (w: Double, h: Double), limit: Double = 8192) -> String {
+            let s = q.streamSize(display: d, clientMax: ipad, codecLimit: limit)
+            return "\(s.w)x\(s.h)"
+        }
+        XCTAssertEqual(size(.full, lg), "5120x1440")
+        XCTAssertEqual(size(.balanced, lg), "2560x720")
+        XCTAssertEqual(size(.saver, lg), "1920x540")
+        XCTAssertEqual(size(.saver, builtIn), "1920x1246", "aspect kept, dimensions even")
+        XCTAssertEqual(size(.full, lg, limit: 4096), "4096x1152", "H.264's limit still applies")
+        // The client's own limit wins when it's smaller.
+        let small = StreamQuality.full.streamSize(display: lg, clientMax: (w: 1000, h: 1000), codecLimit: 8192)
+        XCTAssertEqual(small.w, 1000)
+    }
+
+    func testQualityBitratesStayUnderTheirCeilings() {
+        XCTAssertEqual(StreamQuality.full.bitrate(width: 5120, height: 1440, codec: .hevc), 22_118_400)
+        XCTAssertEqual(StreamQuality.balanced.bitrate(width: 2560, height: 720, codec: .hevc), 6_000_000, "the sharpness floor")
+        XCTAssertEqual(StreamQuality.saver.bitrate(width: 1920, height: 540, codec: .hevc), 2_500_000, "the floor never beats the ceiling")
+        XCTAssertEqual(StreamQuality.full.bitrate(width: 8000, height: 4000, codec: .h264), 40_000_000)
+        XCTAssertEqual(StreamQuality.saver.framesPerSecond, 30)
+    }
+
+    func testQualityOnTheWire() throws {
+        XCTAssertEqual(String(decoding: try JSONEncoder().encode(StreamQuality.saver), as: UTF8.self), #""saver""#)
+        let h = try JSONDecoder().decode(Hello.self, from: Data(#"{"clientName":"x","maxWidth":1,"maxHeight":1,"quality":"balanced"}"#.utf8))
+        XCTAssertEqual(h.quality, .balanced)
+    }
+
     func testCursorPayload() throws {
         let c = try XCTUnwrap(CursorPayload.decode(CursorPayload.encode(x: 0.25, y: 0.75)))
         XCTAssertEqual(c.x, 0.25)
@@ -89,6 +120,7 @@ final class WireTests: XCTestCase {
         XCTAssertNil(h.codecs)
         XCTAssertNil(h.displayID)
         XCTAssertNil(h.audio, "an older client gets no audio")
+        XCTAssertNil(h.quality, "and full quality")
     }
 
     func testPairingCodes() {

@@ -11,6 +11,7 @@ final class HostSession {
     private let conn: FramedConnection
     private let queue = DispatchQueue(label: "remotemac.session", qos: .userInteractive)
     private var hello: Hello?
+    private var quality = StreamQuality.full
     private var streamer: ScreenStreamer?
     private var generation = 0
     private let injector: InputInjector
@@ -96,6 +97,7 @@ final class HostSession {
             guard hello == nil, let h = try? decoder.decode(Hello.self, from: payload) else { return fail(.badPayload(type)) }
             hello = h
             audioOn.value = h.audio == true
+            quality = h.quality ?? .full
             onStatus?("Connected: \(h.clientName)")
             startStream(on: h.displayID)
             startCursorReports()
@@ -110,6 +112,11 @@ final class HostSession {
         case .selectDisplay:
             guard let s = try? decoder.decode(SelectDisplay.self, from: payload) else { return fail(.badPayload(type)) }
             startStream(on: s.displayID)
+        case .setQuality:
+            guard let q = try? decoder.decode(StreamQuality.self, from: payload) else { return fail(.badPayload(type)) }
+            guard q != quality else { return }
+            quality = q
+            if let s = streamer { startStream(on: s.displayID) }
         case .audioEnabled:
             guard payload.count == 1 else { return fail(.badPayload(type)) }
             audioOn.value = payload.first == 1
@@ -151,7 +158,8 @@ final class HostSession {
         Task {
             do {
                 let info = try await streamer.start(displayID: displayID, maxWidth: hello.maxWidth, maxHeight: hello.maxHeight,
-                                                    codecs: hello.codecs ?? [.h264], audio: hello.audio == true)
+                                                    codecs: hello.codecs ?? [.h264], audio: hello.audio == true,
+                                                    quality: quality)
                 queue.async {
                     guard gen == self.generation else { return streamer.stop() }
                     self.injector.displayID = streamer.displayID

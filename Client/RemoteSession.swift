@@ -44,6 +44,11 @@ final class RemoteSession: ObservableObject {
     private let player = AudioPlayer()
     /// The speaker button. Remembered between launches; on by default.
     @Published private(set) var audioEnabled = UserDefaults.standard.object(forKey: "audio") as? Bool ?? true
+    /// The quality menu. Remembered between launches.
+    @Published private(set) var quality = UserDefaults.standard.string(forKey: "quality").flatMap(StreamQuality.init) ?? .full
+    private let meterLock = NSLock()
+    private var videoMeter = RateMeter()
+    private var totalMeter = RateMeter()
 
     init(hostName: String, endpoint: NWEndpoint, code: String) {
         self.hostName = hostName
@@ -80,6 +85,20 @@ final class RemoteSession: ObservableObject {
         conn?.send(.selectDisplay, json: SelectDisplay(displayID: id))
     }
 
+    func setQuality(_ q: StreamQuality) {
+        quality = q
+        UserDefaults.standard.set(q.rawValue, forKey: "quality")
+        conn?.send(.setQuality, json: q)
+    }
+
+    /// Received video and total traffic over the last two seconds.
+    func linkStats() -> (videoMbps: Double, fps: Double, totalMbps: Double) {
+        let now = ProcessInfo.processInfo.systemUptime
+        meterLock.lock(); defer { meterLock.unlock() }
+        let v = videoMeter.rate(at: now), t = totalMeter.rate(at: now)
+        return (v.megabitsPerSecond, v.perSecond, t.megabitsPerSecond)
+    }
+
     func setAudio(_ on: Bool) {
         audioEnabled = on
         UserDefaults.standard.set(on, forKey: "audio")
@@ -103,7 +122,7 @@ final class RemoteSession: ObservableObject {
         let hello = Hello(clientName: UIDevice.current.name,
                           maxWidth: min(8192, Int(max(native.width, native.height)) * 2),
                           maxHeight: min(8192, Int(min(native.width, native.height)) * 2),
-                          codecs: [.hevc, .h264], displayID: displayID, audio: audioEnabled)
+                          codecs: [.hevc, .h264], displayID: displayID, audio: audioEnabled, quality: quality)
         let c = FramedConnection(NWConnection(to: endpoint, using: PairingSecurity.parameters(code: code)), queue: queue)
         conn = c
         queue.async { self.hostError = nil }
@@ -141,6 +160,11 @@ final class RemoteSession: ObservableObject {
     }
 
     private func handle(_ type: MessageType, _ payload: Data) {
+        let now = ProcessInfo.processInfo.systemUptime
+        meterLock.lock()
+        totalMeter.add(bytes: payload.count + Wire.headerSize, at: now)
+        if type == .videoFrame { videoMeter.add(bytes: payload.count, at: now) }
+        meterLock.unlock()
         switch type {
         case .screenInfo:
             guard let info = try? JSONDecoder().decode(ScreenInfo.self, from: payload) else { return fail(type) }
@@ -172,7 +196,7 @@ final class RemoteSession: ObservableObject {
             player.enqueue(samples)
         case .error:
             hostError = String(decoding: payload, as: UTF8.self)
-        case .hello, .input, .requestKeyframe, .selectDisplay, .audioEnabled:
+        case .hello, .input, .requestKeyframe, .selectDisplay, .audioEnabled, .setQuality:
             fail(type)
         }
     }
