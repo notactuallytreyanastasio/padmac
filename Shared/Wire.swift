@@ -90,6 +90,11 @@ enum GesturePhase: String, Codable {
     case began, changed, ended, cancelled
 }
 
+/// Momentum after the fingers lift, generated on the iPad.
+enum MomentumPhase: String, Codable {
+    case began, changed, ended
+}
+
 enum InputEvent: Codable, Equatable {
     /// Relative pointer motion in Mac points (trackpad mode).
     case moveBy(dx: Double, dy: Double)
@@ -97,7 +102,10 @@ enum InputEvent: Codable, Equatable {
     case moveTo(x: Double, y: Double)
     case button(MouseButton, down: Bool)
     /// Scroll in pixels; positive dy moves content down (like a finger dragging it).
-    case scroll(dx: Double, dy: Double)
+    /// `phase` and `momentum` are what a Mac trackpad attaches: apps use them
+    /// for rubber-banding and to know when a scroll is over. Both absent is a
+    /// plain mouse-wheel-style scroll.
+    case scroll(dx: Double, dy: Double, phase: GesturePhase? = nil, momentum: MomentumPhase? = nil)
     /// A Mac virtual key code (kVK_*), pressed or released.
     case key(code: UInt16, down: Bool)
     /// Literal text, typed as unicode regardless of the Mac's keyboard layout.

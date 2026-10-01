@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import XCTest
 
@@ -157,6 +158,40 @@ final class InputInjectorTests: XCTestCase {
         XCTAssertEqual(unicode(downs[0]), "a")
         XCTAssertEqual(downs[1].getIntegerValueField(.keyboardEventKeycode), 36)
         XCTAssertEqual(unicode(downs[2]), "b")
+    }
+
+    func testTrackpadScrollPhasesAndMomentumReachTheEvent() {
+        send(.scroll(dx: 0, dy: 5, phase: .began), .scroll(dx: 0, dy: 10, phase: .changed), .scroll(dx: 0, dy: 0, phase: .ended),
+             .scroll(dx: 0, dy: 8, momentum: .began), .scroll(dx: 0, dy: 4, momentum: .changed), .scroll(dx: 0, dy: 0, momentum: .ended))
+        XCTAssertEqual(events.map { $0.getIntegerValueField(.scrollWheelEventScrollPhase) }, [1, 2, 4, 0, 0, 0])
+        XCTAssertEqual(events.map { $0.getIntegerValueField(.scrollWheelEventMomentumPhase) }, [0, 0, 0, 1, 2, 3])
+        XCTAssertEqual(events.map { $0.getIntegerValueField(.scrollWheelEventPointDeltaAxis1) }, [5, 10, 0, 8, 4, 0])
+    }
+
+    func testAppKitReadsThemAsTrackpadScrolls() throws {
+        // Apps see NSEvents; check AppKit's own conversion of what we post.
+        send(.scroll(dx: 0, dy: 12, phase: .began), .scroll(dx: 0, dy: 30, momentum: .changed))
+        let scroll = try XCTUnwrap(NSEvent(cgEvent: events[0]))
+        XCTAssertEqual(scroll.type, .scrollWheel)
+        XCTAssertEqual(scroll.phase, .began)
+        XCTAssertEqual(scroll.momentumPhase, [])
+        XCTAssertTrue(scroll.hasPreciseScrollingDeltas, "pixel deltas, like a trackpad, not wheel notches")
+        XCTAssertEqual(scroll.scrollingDeltaY, 12)
+        let coast = try XCTUnwrap(NSEvent(cgEvent: events[1]))
+        XCTAssertEqual(coast.momentumPhase, .changed)
+        XCTAssertEqual(coast.phase, [])
+    }
+
+    func testSubPixelScrollsAddUp() {
+        // The slow tail of a momentum scroll: 0.4px a frame used to round to nothing.
+        send(.scroll(dx: 0, dy: 0.4, momentum: .began))
+        for _ in 0..<9 { send(.scroll(dx: 0, dy: 0.4, momentum: .changed)) }
+        let total = events.reduce(0) { $0 + $1.getIntegerValueField(.scrollWheelEventPointDeltaAxis1) }
+        XCTAssertEqual(total, 4)
+        // Negative fractions carry too, and a new scroll starts clean.
+        events = []
+        send(.scroll(dx: -0.6, dy: 0, phase: .began), .scroll(dx: -0.6, dy: 0, phase: .changed))
+        XCTAssertEqual(events.reduce(0) { $0 + $1.getIntegerValueField(.scrollWheelEventPointDeltaAxis2) }, -1)
     }
 
     func testScrollIsPixelBased() {

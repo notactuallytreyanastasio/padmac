@@ -31,6 +31,12 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     private var stickyButtons: [UInt16: UIButton] = [:]
     private var sticky = Set<UInt16>()
     private var dragging = false
+    private var accel = PointerAcceleration()
+    private var scrolling = false
+    private var momentum: ScrollMomentum?
+    private var momentumLink: CADisplayLink?
+    private var momentumStarted = false
+    private var momentumLast: CFTimeInterval = 0
 
     private var viewport = Viewport(viewSize: .zero, content: .zero)
     private var zoom: CGFloat { viewport.zoom }
@@ -86,6 +92,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             // Keys held when the app lost focus would otherwise stay down on the Mac.
+            self?.stopMomentum()
             self?.session.send(.releaseAll)
             self?.clearSticky()
         }
@@ -122,13 +129,22 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         return (Double(min(max((p.x - r.minX) / r.width, 0), 1)), Double(min(max((p.y - r.minY) / r.height, 0), 1)))
     }
 
-    /// iPad points to Mac points, with a little acceleration for fast swipes.
-    private func macDelta(_ d: CGPoint, velocity: CGPoint) -> (Double, Double) {
-        guard let s = session.screen else { return (0, 0) }
-        let scale = s.screenWidth / (videoRect.width * zoom)
-        let speed = hypot(velocity.x, velocity.y)
-        let accel = 1.2 + min(speed / 900, 1.8)
-        return (Double(d.x * scale * accel), Double(d.y * scale * accel))
+    /// iPad points per Mac point as currently drawn, zoom included.
+    private var onScreenScale: Double {
+        guard let s = session.screen, s.screenWidth > 0 else { return 1 }
+        return Double(videoRect.width * zoom) / s.screenWidth
+    }
+
+    /// Relative cursor movement for a finger movement, through the acceleration curve.
+    private func moveCursor(by d: CGPoint) {
+        let m = accel.macDelta(d, at: CACurrentMediaTime(), onScreenScale: onScreenScale)
+        if m.x != 0 || m.y != 0 { session.send(.moveBy(dx: Double(m.x), dy: Double(m.y))) }
+    }
+
+    // Touching the screen stops a coasting scroll, as touching a trackpad does.
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        stopMomentum()
+        super.touchesBegan(touches, with: event)
     }
 
     // MARK: Touch
@@ -175,10 +191,10 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         guard !dragging else { return }
         switch mode {
         case .trackpad:
+            if g.state == .began { accel.reset() }
             let t = g.translation(in: view)
             g.setTranslation(.zero, in: view)
-            let (dx, dy) = macDelta(t, velocity: g.velocity(in: view))
-            if dx != 0 || dy != 0 { session.send(.moveBy(dx: dx, dy: dy)) }
+            moveCursor(by: t)
         case .direct:
             let (x, y) = normalized(g.location(in: video))
             switch g.state {
@@ -194,12 +210,65 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         }
     }
 
+    /// Two-finger scrolling, with the phases a Mac trackpad sends and momentum
+    /// after lift-off. Content moves 1:1 with the fingers as seen on the iPad.
     @objc private func scroll(_ g: UIPanGestureRecognizer) {
         let t = g.translation(in: view)
         g.setTranslation(.zero, in: view)
-        guard !pinching else { return } // this two-finger gesture turned out to be a pinch
-        let k = (session.screen?.screenWidth ?? videoRect.width) / (videoRect.width * zoom)
-        session.send(.scroll(dx: Double(t.x * k), dy: Double(t.y * k)))
+        let k = 1 / onScreenScale
+        switch g.state {
+        case .began:
+            stopMomentum()
+            guard !pinching else { return }
+            scrolling = true
+            session.send(.scroll(dx: Double(t.x) * k, dy: Double(t.y) * k, phase: .began))
+        case .changed:
+            // A two-finger gesture that turned into a pinch stops scrolling the Mac.
+            guard scrolling, !pinching else { return endScroll(cancelled: true) }
+            session.send(.scroll(dx: Double(t.x) * k, dy: Double(t.y) * k, phase: .changed))
+        case .ended:
+            guard scrolling else { return }
+            endScroll(cancelled: false)
+            let v = g.velocity(in: view)
+            if let m = ScrollMomentum(velocity: CGVector(dx: Double(v.x) * k, dy: Double(v.y) * k)) { startMomentum(m) }
+        default:
+            endScroll(cancelled: true)
+        }
+    }
+
+    private func endScroll(cancelled: Bool) {
+        guard scrolling else { return }
+        scrolling = false
+        session.send(.scroll(dx: 0, dy: 0, phase: cancelled ? .cancelled : .ended))
+    }
+
+    private func startMomentum(_ m: ScrollMomentum) {
+        momentum = m
+        momentumStarted = false
+        momentumLast = CACurrentMediaTime()
+        let link = CADisplayLink(target: self, selector: #selector(momentumTick(_:)))
+        link.add(to: .main, forMode: .common)
+        momentumLink = link
+    }
+
+    @objc private func momentumTick(_ link: CADisplayLink) {
+        guard var m = momentum else { return stopMomentum() }
+        let now = link.targetTimestamp
+        let (d, done) = m.step(max(0, now - momentumLast))
+        momentumLast = now
+        momentum = m
+        session.send(.scroll(dx: Double(d.dx), dy: Double(d.dy), momentum: momentumStarted ? .changed : .began))
+        momentumStarted = true
+        if done { stopMomentum() }
+    }
+
+    private func stopMomentum() {
+        guard let link = momentumLink else { return }
+        link.invalidate()
+        momentumLink = nil
+        momentum = nil
+        if momentumStarted { session.send(.scroll(dx: 0, dy: 0, momentum: .ended)) }
+        momentumStarted = false
     }
 
     @objc private func tap(_ g: UITapGestureRecognizer) {
@@ -224,14 +293,15 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         switch g.state {
         case .began:
             dragging = true
+            accel.reset()
             lastHold = g.location(in: view)
             session.send(.button(.left, down: true))
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         case .changed:
+            // Same curve as moving: a drag should feel like a move with the button down.
             let p = g.location(in: view)
-            let (dx, dy) = macDelta(CGPoint(x: p.x - lastHold.x, y: p.y - lastHold.y), velocity: .zero)
+            moveCursor(by: CGPoint(x: p.x - lastHold.x, y: p.y - lastHold.y))
             lastHold = p
-            session.send(.moveBy(dx: dx, dy: dy))
         default:
             dragging = false
             session.send(.button(.left, down: false))

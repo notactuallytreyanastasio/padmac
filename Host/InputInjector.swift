@@ -39,6 +39,7 @@ final class InputInjector {
     private var capsLock = false
     private var lastDown: (button: MouseButton, time: TimeInterval, at: CGPoint, count: Int)?
     private var swipeState: (axis: SwipeAxis, offset: Double, lastDelta: Double)?
+    private var scrollRemainder = (x: 0.0, y: 0.0)
     private var swipeGeneration = 0
 
     init(displayID: CGDirectDisplayID, system: System = .live) {
@@ -87,11 +88,8 @@ final class InputInjector {
             move(to: CGPoint(x: b.minX + x * b.width, y: b.minY + y * b.height))
         case .button(let button, let down):
             press(button, down: down)
-        case .scroll(let dx, let dy):
-            guard let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
-                                  wheel1: Int32(dy.rounded()), wheel2: Int32(dx.rounded()), wheel3: 0) else { return }
-            e.flags = flags
-            system.post(e)
+        case .scroll(let dx, let dy, let phase, let momentum):
+            scroll(dx, dy, phase, momentum)
         case .key(let code, let down):
             key(code, down: down)
         case .text(let text):
@@ -108,6 +106,29 @@ final class InputInjector {
         for k in heldKeys { key(k, down: false) }
         // A swipe left open leaves the Dock stuck between two desktops.
         if let s = swipeState { swipe(s.axis, .cancelled, 0) }
+    }
+
+    /// Scroll events only carry whole pixels. Rounding each one dropped the slow
+    /// end of every scroll (0.4px a frame is 0), so the fractions carry over.
+    private func scroll(_ dx: Double, _ dy: Double, _ phase: GesturePhase?, _ momentum: MomentumPhase?) {
+        if phase == .began || momentum == .began { scrollRemainder = (0, 0) }
+        let x = dx + scrollRemainder.x, y = dy + scrollRemainder.y
+        let ix = x.rounded(.towardZero), iy = y.rounded(.towardZero)
+        scrollRemainder = (x - ix, y - iy)
+        guard let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
+                              wheel1: Int32(iy), wheel2: Int32(ix), wheel3: 0) else { return }
+        if let phase {
+            // CGScrollPhase
+            let bits: Int64 = switch phase { case .began: 1; case .changed: 2; case .ended: 4; case .cancelled: 8 }
+            e.setIntegerValueField(.scrollWheelEventScrollPhase, value: bits)
+        }
+        if let momentum {
+            // CGMomentumScrollPhase
+            let v: Int64 = switch momentum { case .began: 1; case .changed: 2; case .ended: 3 }
+            e.setIntegerValueField(.scrollWheelEventMomentumPhase, value: v)
+        }
+        e.flags = flags
+        system.post(e)
     }
 
     /// Fingers moving left or up give a positive Dock offset: next desktop, Mission Control.

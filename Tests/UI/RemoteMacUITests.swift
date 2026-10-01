@@ -97,7 +97,7 @@ final class RemoteMacUITests: XCTestCase {
         XCTAssertGreaterThan(zoom, 1.5)
         let e = log.waitFor(settle: 0.5) { _ in false }
         XCTAssertEqual(buttons(e), [])
-        let scrolled = e.reduce(0.0) { if case .scroll(let dx, let dy) = $1 { $0 + abs(dx) + abs(dy) } else { $0 } }
+        let scrolled = e.reduce(0.0) { if case .scroll(let dx, let dy, _, _) = $1 { $0 + abs(dx) + abs(dy) } else { $0 } }
         XCTAssertLessThan(scrolled, 40, "a pinch may start as a scroll but must stop scrolling once it's a pinch")
     }
 

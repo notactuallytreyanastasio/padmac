@@ -55,12 +55,17 @@ final class WireTests: XCTestCase {
         let events: [InputEvent] = [
             .moveBy(dx: 1.5, dy: -2), .moveTo(x: 0.1, y: 0.9),
             .button(.left, down: true), .button(.right, down: false), .button(.middle, down: true),
-            .scroll(dx: 0, dy: -12.5), .key(code: 55, down: true), .text("héllo 😀\n"), .releaseAll,
+            .scroll(dx: 0, dy: -12.5), .scroll(dx: 1, dy: 2, phase: .changed), .scroll(dx: 0, dy: 0, momentum: .ended), .key(code: 55, down: true), .text("héllo 😀\n"), .releaseAll,
             .swipe(axis: .horizontal, phase: .began, distance: -0.25), .swipe(axis: .vertical, phase: .cancelled, distance: 0),
         ]
         for e in events {
             XCTAssertEqual(try JSONDecoder().decode(InputEvent.self, from: JSONEncoder().encode(e)), e)
         }
+    }
+
+    func testScrollFromAnOlderClientHasNoPhases() throws {
+        let e = try JSONDecoder().decode(InputEvent.self, from: Data(#"{"scroll":{"dx":1,"dy":2}}"#.utf8))
+        XCTAssertEqual(e, .scroll(dx: 1, dy: 2, phase: nil, momentum: nil))
     }
 
     func testHelloFromOlderClientDecodes() throws {
