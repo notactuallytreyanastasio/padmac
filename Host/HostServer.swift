@@ -42,7 +42,7 @@ final class HostServer {
     }
 
     private func accept(_ connection: NWConnection) {
-        session?.stop()
+        session?.supersede(by: connection.endpoint.debugDescription)
         let s = HostSession(connection: connection)
         s.onStatus = { [weak self] in self?.onStatus?($0) }
         s.onEnd = { [weak self] ended, error in

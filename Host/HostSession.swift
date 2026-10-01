@@ -60,6 +60,17 @@ final class HostSession {
 
     func stop() { conn.cancel() }
 
+    /// Another device connected. Say so before hanging up: the iPad treats a
+    /// reason from the host as final, where a bare disconnect makes it
+    /// reconnect, and two iPads would then take turns knocking each other off.
+    func supersede(by peer: String) {
+        let conn = self.conn
+        queue.async {
+            conn.send(.error, Data("Another device connected to this Mac (\(peer)).".utf8))
+            self.queue.asyncAfter(deadline: .now() + 0.3) { conn.cancel() }
+        }
+    }
+
     private func teardown() {
         awake = nil
         streamer?.stop()

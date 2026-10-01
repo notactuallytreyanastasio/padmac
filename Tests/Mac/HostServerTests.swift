@@ -76,15 +76,19 @@ final class HostServerTests: XCTestCase {
         wait(for: [closed], timeout: 5)
     }
 
-    func testANewClientReplacesTheOld() throws {
+    func testANewClientReplacesTheOldAndTellsItWhy() throws {
         let (first, r1) = client()
         let firstClosed = expectation(description: "first closed")
+        var reason: String?
+        // A bare disconnect would make the displaced iPad reconnect and knock the new one off.
+        first.onMessage = { t, d in if t == .error { reason = String(decoding: d, as: UTF8.self) } }
         first.onClose = { _ in firstClosed.fulfill() }
         first.start()
         wait(for: [r1], timeout: 5)
         let (second, r2) = client()
         second.start()
         wait(for: [r2, firstClosed], timeout: 5)
+        XCTAssertTrue(reason?.hasPrefix("Another device connected") == true, "got \(String(describing: reason))")
         second.send(.input, json: InputEvent.releaseAll)
         let deadline = Date().addingTimeInterval(3)
         while loggedEvents().isEmpty && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
