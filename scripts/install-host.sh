@@ -10,7 +10,12 @@ pkill -x RemoteMacHost || true
 for i in {1..50}; do pgrep -x RemoteMacHost >/dev/null || break; sleep 0.1; done
 rm -rf "/Applications/Remote Mac Host.app"
 cp -R build/Build/Products/Release/RemoteMacHost.app "/Applications/Remote Mac Host.app"
-open "/Applications/Remote Mac Host.app"
+if launchctl print gui/$(id -u)/com.bgrayson.remotemac.keepalive >/dev/null 2>&1; then
+  # launchd owns it (scripts/keepalive-host.sh): restart through launchd, not alongside it.
+  launchctl kickstart -k gui/$(id -u)/com.bgrayson.remotemac.keepalive
+else
+  open "/Applications/Remote Mac Host.app"
+fi
 for i in {1..50}; do pgrep -x RemoteMacHost >/dev/null && break; sleep 0.1; done
 if ! pgrep -x RemoteMacHost >/dev/null; then
   echo "Remote Mac Host did not start. Open /Applications/Remote Mac Host.app by hand." >&2
