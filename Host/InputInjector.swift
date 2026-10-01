@@ -11,6 +11,10 @@ final class InputInjector {
     /// capture events instead of moving the real cursor.
     struct System {
         var post: (CGEvent) -> Void
+        /// Gesture events go to the session tap, where the Dock listens.
+        var postGesture: (CGEvent) -> Void
+        var after: (TimeInterval, @escaping () -> Void) -> Void
+        var spaces: (CGDirectDisplayID) -> Int?
         var bounds: (CGDirectDisplayID) -> CGRect
         var cursor: () -> CGPoint
         var now: () -> TimeInterval
@@ -18,6 +22,9 @@ final class InputInjector {
 
         static let live = System(
             post: { $0.post(tap: .cghidEventTap) },
+            postGesture: { $0.post(tap: .cgSessionEventTap) },
+            after: { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) },
+            spaces: { Spaces.count(on: $0) },
             bounds: { CGDisplayBounds($0) },
             cursor: { CGEvent(source: nil)?.location ?? .zero },
             now: { ProcessInfo.processInfo.systemUptime },
@@ -31,6 +38,8 @@ final class InputInjector {
     private var heldKeys = Set<UInt16>()
     private var capsLock = false
     private var lastDown: (button: MouseButton, time: TimeInterval, at: CGPoint, count: Int)?
+    private var swipeState: (axis: SwipeAxis, offset: Double, lastDelta: Double)?
+    private var swipeGeneration = 0
 
     init(displayID: CGDirectDisplayID, system: System = .live) {
         self.displayID = displayID
@@ -87,6 +96,8 @@ final class InputInjector {
             key(code, down: down)
         case .text(let text):
             type(text)
+        case .swipe(let axis, let phase, let distance):
+            swipe(axis, phase, distance)
         case .releaseAll:
             releaseAll()
         }
@@ -95,6 +106,44 @@ final class InputInjector {
     func releaseAll() {
         for b in buttons { press(b, down: false) }
         for k in heldKeys { key(k, down: false) }
+        // A swipe left open leaves the Dock stuck between two desktops.
+        if let s = swipeState { swipe(s.axis, .cancelled, 0) }
+    }
+
+    /// Fingers moving left or up give a positive Dock offset: next desktop, Mission Control.
+    private func swipe(_ axis: SwipeAxis, _ phase: GesturePhase, _ distance: Double) {
+        let scale = axis == .horizontal ? DockSwipe.offsetPerSpace(spaces: system.spaces(displayID) ?? 2) : 1
+        let offset = -distance * scale
+        switch phase {
+        case .began:
+            if let s = swipeState { swipe(s.axis, .cancelled, 0) }
+            swipeGeneration += 1
+            swipeState = (axis, offset, offset)
+            postSwipe(axis, .began, offset)
+        case .changed:
+            guard let s = swipeState, s.axis == axis, offset != s.offset else { return }
+            swipeState = (axis, offset, offset - s.offset)
+            postSwipe(axis, .changed, offset)
+        case .ended, .cancelled:
+            guard let s = swipeState else { return }
+            swipeState = nil
+            // Lifting while moving back toward the start cancels, as on a trackpad.
+            var p: DockSwipe.Phase = phase == .ended ? .ended : .cancelled
+            if p == .ended && (s.lastDelta < 0) != (s.offset < 0) { p = .cancelled }
+            let events = DockSwipe.events(axis: s.axis, phase: p, offset: s.offset, exitSpeed: s.lastDelta * 100)
+            events.forEach(system.postGesture)
+            // The Dock sometimes drops the end event under load and stays mid-swipe;
+            // Mac Mouse Fix found sending it again 0.2s later fixes that.
+            let generation = swipeGeneration
+            system.after(0.2) { [weak self] in
+                guard let self, self.swipeGeneration == generation else { return }
+                events.forEach(self.system.postGesture)
+            }
+        }
+    }
+
+    private func postSwipe(_ axis: SwipeAxis, _ phase: DockSwipe.Phase, _ offset: Double) {
+        DockSwipe.events(axis: axis, phase: phase, offset: offset).forEach(system.postGesture)
     }
 
     private func move(to target: CGPoint) {

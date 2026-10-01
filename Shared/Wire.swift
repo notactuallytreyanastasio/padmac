@@ -79,6 +79,17 @@ enum MouseButton: Int, Codable {
     case left, right, middle
 }
 
+enum SwipeAxis: String, Codable {
+    /// Between desktops and full-screen apps.
+    case horizontal
+    /// Mission Control (up) and App Exposé (down).
+    case vertical
+}
+
+enum GesturePhase: String, Codable {
+    case began, changed, ended, cancelled
+}
+
 enum InputEvent: Codable, Equatable {
     /// Relative pointer motion in Mac points (trackpad mode).
     case moveBy(dx: Double, dy: Double)
@@ -91,7 +102,12 @@ enum InputEvent: Codable, Equatable {
     case key(code: UInt16, down: Bool)
     /// Literal text, typed as unicode regardless of the Mac's keyboard layout.
     case text(String)
-    /// Release every button and key the host believes is held.
+    /// A three-finger trackpad-style swipe. `distance` is the fingers' total
+    /// travel since the gesture began, as a fraction of the iPad view's width
+    /// (horizontal) or height (vertical), signed in screen directions:
+    /// negative is left or up. A full-width swipe moves one desktop.
+    case swipe(axis: SwipeAxis, phase: GesturePhase, distance: Double)
+    /// Release every button and key the host believes is held, and end any swipe.
     case releaseAll
 }
 

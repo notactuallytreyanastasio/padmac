@@ -9,13 +9,13 @@ import UniformTypeIdentifiers
 import VideoToolbox
 
 // End-to-end check of a running host, from the client's side of the wire:
-//   probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard]
+//   probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe]
 // Connects over TLS-PSK, decodes video with VideoToolbox, writes a sharp frame
 // as PNG, and prints PASS/FAIL for each optional check. Run it on the host Mac:
 // the checks read the real cursor and pasteboard back.
 
 let args = CommandLine.arguments
-guard args.count >= 3 else { print("usage: probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard]"); exit(2) }
+guard args.count >= 3 else { print("usage: probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe]"); exit(2) }
 let hostPort = args[1].split(separator: ":")
 let host = String(hostPort[0]), port = hostPort.count > 1 ? UInt16(hostPort[1])! : Wire.port
 let code = args[2]
@@ -36,6 +36,7 @@ var wrote = false
 var failures = 0
 var clipboardReceived: [String] = []
 var latencies: [Double] = []
+var arrivals: [Double] = []
 var worst: [(ms: Double, index: Int, bytes: Int, key: Bool)] = []
 
 func check(_ ok: Bool, _ what: String) {
@@ -68,6 +69,33 @@ func runMoveChecks(_ info: ScreenInfo) {
                 let want = CGPoint(x: before.x + 200, y: before.y + 100), got = at()
                 check(abs(got.x - want.x) < 2 && abs(got.y - want.y) < 2, "20 x moveBy(10, 5): expected \(want), cursor at \(got)")
             }
+        }
+    }
+}
+
+/// Really changes desktop and back, checking the active Space through SkyLight.
+func runSwipeChecks(_ info: ScreenInfo) {
+    let display = info.displayID
+    guard let count = Spaces.count(on: display), let start = Spaces.activeIndex(on: display) else {
+        return check(false, "swipe: can't read Spaces")
+    }
+    guard count > 1 else { return check(false, "swipe: needs at least 2 desktops on this display, has \(count)") }
+    // Fingers left (negative) go to the next desktop; use the previous one if this is the last.
+    let toward: Double = start + 1 < count ? -1 : 1
+    func swipe(_ d: Double, then: @escaping () -> Void) {
+        conn.send(.input, json: InputEvent.swipe(axis: .horizontal, phase: .began, distance: d * 0.05))
+        for i in 2...20 {
+            after(Double(i) * 0.012) { conn.send(.input, json: InputEvent.swipe(axis: .horizontal, phase: .changed, distance: d * Double(i) * 0.05)) }
+        }
+        after(0.3) { conn.send(.input, json: InputEvent.swipe(axis: .horizontal, phase: .ended, distance: d)) }
+        after(1.4, then)
+    }
+    swipe(toward) {
+        let moved = Spaces.activeIndex(on: display)
+        check(moved == start + (toward < 0 ? 1 : -1), "swipe changed desktop: \(start) -> \(moved.map(String.init) ?? "?") of \(count)")
+        swipe(-toward) {
+            let back = Spaces.activeIndex(on: display)
+            check(back == start, "swipe back returned to desktop \(start): at \(back.map(String.init) ?? "?")")
         }
     }
 }
@@ -127,6 +155,7 @@ conn.onMessage = { type, payload in
             start = Date()
             if flags.contains("--move") { runMoveChecks(info) }
             if flags.contains("--clipboard") { after(2.5, runClipboardChecks) }
+            if flags.contains("--swipe") { after(0.5) { runSwipeChecks(info) } }
             if flags.contains("--displays") {
                 // With one display, re-selecting it still exercises the restart path.
                 let target = info.displays.first(where: { $0.id != info.displayID }) ?? info.displays[0]
@@ -159,6 +188,8 @@ conn.onMessage = { type, payload in
         frames += 1; bytes += payload.count
         if FramePayload.parse(payload)?.keyframe == true { keyframes += 1 }
         guard let frame = FramePayload.parse(payload) else { print("FAIL bad frame payload"); exit(1) }
+        let arrived = UInt64(CMClockGetTime(CMClockGetHostTimeClock()).seconds * 1e9)
+        if !frame.refresh, frame.captureNanos > 0, arrived > frame.captureNanos { arrivals.append(Double(arrived - frame.captureNanos) / 1e6) }
         guard let format, let decoder,
               let sb = VideoFormat.sampleBuffer(frame.body, format: format, displayImmediately: false) else {
             print("frame \(frames): no decoder yet"); return
@@ -191,7 +222,7 @@ conn.onMessage = { type, payload in
 }
 conn.start()
 
-let duration = flags.contains("--clipboard") ? 6.5 : 4.5
+let duration = flags.contains("--clipboard") || flags.contains("--swipe") ? 6.5 : 4.5
 DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
     let secs = Date().timeIntervalSince(start)
     print(String(format: "%d frames (%d key), %d decoded, %.1f KB avg, %.2f Mbit/s over %.1fs, %d cursor reports",
@@ -203,6 +234,10 @@ DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
         print(String(format: "capture-to-decoded latency: p50 %.1fms  p95 %.1fms  max %.1fms  (n=%d, excludes Wi-Fi)", pct(0.5), pct(0.95), l.last!, l.count))
         // Generous: this Mac measures ~19ms. A regression to a queue building up shows as 100+.
         check(pct(0.5) < 50, String(format: "median latency %.1fms under 50ms", pct(0.5)))
+        if !arrivals.isEmpty {
+            let a = arrivals.sorted()
+            print(String(format: "  of which capture-to-arrival: p50 %.1fms  p95 %.1fms (encode + TLS + socket)", a[a.count / 2], a[min(a.count - 1, Int(Double(a.count) * 0.95))]))
+        }
         if flags.contains("--latency") {
             for w in worst.sorted(by: { $0.ms > $1.ms }).prefix(12) {
                 print(String(format: "  frame #%d  %.1fms  %d KB%@", w.index, w.ms, w.bytes / 1024, w.key ? "  keyframe" : ""))

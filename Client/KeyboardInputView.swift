@@ -19,6 +19,9 @@ final class KeyboardInputView: UIView, UIKeyInput {
     private var repeatTimer: Timer?
 
     override var canBecomeFirstResponder: Bool { true }
+    // This view is first responder, so it decides whether iPadOS's three-finger
+    // undo swipe runs. It mustn't: three fingers are the Mac's desktop swipe.
+    override var editingInteractionConfiguration: UIEditingInteractionConfiguration { .none }
     override var inputView: UIView? { softKeyboard ? nil : empty }
     override var inputAccessoryView: UIView? { softKeyboard ? accessory : nil }
 

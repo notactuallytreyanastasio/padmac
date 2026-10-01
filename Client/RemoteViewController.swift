@@ -10,8 +10,11 @@ import UniformTypeIdentifiers
 /// An iPad trackpad or mouse maps absolutely: hovering puts the Mac cursor
 /// under it, and the iPad's own pointer is hidden.
 ///
-/// Pinch zooms (a 32:9 display on a 4:3 iPad is unreadable otherwise), three
-/// fingers pan, and while zoomed the view follows the Mac cursor. Zoom is a
+/// Three-finger swipes are the Mac's trackpad gestures: sideways changes
+/// desktop, up is Mission Control, down is App Exposé.
+///
+/// Pinch zooms (a 32:9 display on a 4:3 iPad is unreadable otherwise), moving
+/// the pinch pans, and while zoomed the view follows the Mac cursor. Zoom is a
 /// transform on the video view, so `location(in: video)` still returns
 /// unzoomed coordinates and none of the input mapping has to know about it.
 final class RemoteViewController: UIViewController, UIPointerInteractionDelegate, UIGestureRecognizerDelegate {
@@ -33,6 +36,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     private var zoom: CGFloat { viewport.zoom }
     private var pinchStart: (viewport: Viewport, centroid: CGPoint)?
     private var pinching = false
+    private var swipe = SwipeTracker()
     private var zoomButton: UIButton!
     private var displayButton: UIButton!
 
@@ -156,7 +160,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinch(_:)))
 
-        let threePan = UIPanGestureRecognizer(target: self, action: #selector(threeFingerPan(_:)))
+        let threePan = UIPanGestureRecognizer(target: self, action: #selector(threeFingerSwipe(_:)))
         threePan.minimumNumberOfTouches = 3
         threePan.maximumNumberOfTouches = 3
         threePan.allowedTouchTypes = direct
@@ -255,7 +259,8 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
             pinchStart = (viewport, g.location(in: view))
             pinching = false
         case .changed:
-            guard let start = pinchStart else { return }
+            // Three fingers are a Mac swipe, even if they happen to spread a little.
+            guard let start = pinchStart, g.numberOfTouches == 2 else { return }
             if !pinching && abs(g.scale - 1) > 0.08 { pinching = true }
             guard pinching else { return }
             viewport.pinch(from: start.viewport, startCentroid: start.centroid, scale: g.scale, centroid: g.location(in: view))
@@ -266,11 +271,20 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         }
     }
 
-    @objc private func threeFingerPan(_ g: UIPanGestureRecognizer) {
-        viewport.pan(by: g.translation(in: view))
-        g.setTranslation(.zero, in: view)
-        applyZoom()
+    @objc private func threeFingerSwipe(_ g: UIPanGestureRecognizer) {
+        let t = g.translation(in: view), size = view.bounds.size
+        switch g.state {
+        case .began, .changed:
+            if let e = swipe.update(translation: t, in: size) { session.send(e) }
+        case .ended:
+            swipe.end(translation: t, in: size).forEach(session.send)
+        default:
+            swipe.end(translation: t, in: size, cancelled: true).forEach(session.send)
+        }
     }
+
+    // iPadOS's three-finger undo/redo swipes and copy/paste pinches would fight the Mac's gestures.
+    override var editingInteractionConfiguration: UIEditingInteractionConfiguration { .none }
 
     private func applyZoom() {
         video.center = .zero

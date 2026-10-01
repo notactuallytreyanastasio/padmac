@@ -4,14 +4,22 @@ import XCTest
 /// Input logic with events captured instead of posted: nothing touches the real cursor.
 final class InputInjectorTests: XCTestCase {
     private var events: [CGEvent] = []
+    private var gestures: [CGEvent] = []
+    private var pending: [(TimeInterval, () -> Void)] = []
+    private var spaceCount: Int? = 5
     private var clock: TimeInterval = 1000
     private var realCursor = CGPoint(x: 100, y: 100)
     private var injector: InputInjector!
 
     override func setUp() {
         events = []
+        gestures = []
+        pending = []
         let system = InputInjector.System(
             post: { [unowned self] in self.events.append($0) },
+            postGesture: { [unowned self] in self.gestures.append($0) },
+            after: { [unowned self] delay, f in self.pending.append((delay, f)) },
+            spaces: { [unowned self] _ in self.spaceCount },
             bounds: { _ in CGRect(x: 0, y: 0, width: 1000, height: 500) },
             cursor: { [unowned self] in self.realCursor },
             now: { [unowned self] in self.clock },
@@ -157,5 +165,83 @@ final class InputInjectorTests: XCTestCase {
         XCTAssertEqual(events[0].getIntegerValueField(.scrollWheelEventIsContinuous), 1, "pixel scrolling")
         XCTAssertEqual(events[0].getIntegerValueField(.scrollWheelEventPointDeltaAxis1), -40)
         XCTAssertEqual(events[0].getIntegerValueField(.scrollWheelEventPointDeltaAxis2), 3)
+    }
+
+    // MARK: Swipes
+
+    private func field(_ e: CGEvent, _ f: UInt32) -> Double { e.getDoubleValueField(CGEventField(rawValue: f)!) }
+    /// The Dock-control events (type 30) among the posted gestures: (phase, offset, swipe type).
+    private var dock: [(phase: Int, offset: Double, type: Int)] {
+        gestures.filter { field($0, 55) == 30 }.map { (Int(field($0, 132)), field($0, 124), Int(field($0, 123))) }
+    }
+
+    func testSwipingLeftAFullWidthMovesOneDesktopRight() {
+        send(.swipe(axis: .horizontal, phase: .began, distance: -0.1),
+             .swipe(axis: .horizontal, phase: .changed, distance: -0.6),
+             .swipe(axis: .horizontal, phase: .ended, distance: -1))
+        // 5 spaces -> 1.25 offset per desktop; positive means the next desktop (measured on macOS 26.2).
+        // (Values chosen to be exact in Float32: the field is stored as a 32-bit float.)
+        XCTAssertEqual(dock.map(\.phase), [1, 2, 4])
+        XCTAssertEqual(dock.map(\.offset), [0.125, 0.75, 0.75], "ended reports the last offset it moved to")
+        XCTAssertEqual(dock.map(\.type), [1, 1, 1])
+        XCTAssertTrue(events.isEmpty, "gestures go to the session tap, not the HID tap")
+        XCTAssertEqual(gestures.count, 6, "each step is a Dock event plus a gesture event")
+    }
+
+    func testDockEventCarriesTheOffsetTwiceAndTheTypeAsAFloatBitPattern() {
+        let e = DockSwipe.events(axis: .horizontal, phase: .changed, offset: 0.75)[0]
+        XCTAssertEqual(field(e, 110), 23, "kIOHIDEventTypeDockSwipe")
+        XCTAssertEqual(e.getIntegerValueField(CGEventField(rawValue: 135)!), Int64(Float(0.75).bitPattern))
+        XCTAssertEqual(field(e, 119), Double(Float(bitPattern: 1)))
+        XCTAssertEqual(DockSwipe.offsetPerSpace(spaces: 2), 2)
+        XCTAssertEqual(DockSwipe.offsetPerSpace(spaces: 5), 1.25)
+        XCTAssertEqual(DockSwipe.offsetPerSpace(spaces: 1), 2)
+    }
+
+    func testSwipingUpIsMissionControl() {
+        send(.swipe(axis: .vertical, phase: .began, distance: -0.2), .swipe(axis: .vertical, phase: .ended, distance: -0.2))
+        XCTAssertEqual(dock.map(\.type), [2, 2])
+        XCTAssertEqual(dock[0].offset, 0.2, accuracy: 1e-6, "up is positive: +1.0 opened Mission Control on macOS 26.2")
+    }
+
+    func testLiftingWhileMovingBackCancels() {
+        send(.swipe(axis: .horizontal, phase: .began, distance: -0.2),
+             .swipe(axis: .horizontal, phase: .changed, distance: -0.5),
+             .swipe(axis: .horizontal, phase: .changed, distance: -0.4),
+             .swipe(axis: .horizontal, phase: .ended, distance: -0.4))
+        XCTAssertEqual(dock.last?.phase, 8, "cancelled: the fingers were heading back")
+    }
+
+    func testEndIsSentAgainAfterAPauseUnlessANewSwipeStarted() {
+        send(.swipe(axis: .horizontal, phase: .began, distance: -0.2), .swipe(axis: .horizontal, phase: .ended, distance: -0.2))
+        XCTAssertEqual(pending.map(\.0), [0.2])
+        pending.removeFirst().1()
+        XCTAssertEqual(dock.map(\.phase), [1, 4, 4])
+
+        gestures = []
+        send(.swipe(axis: .horizontal, phase: .began, distance: -0.2), .swipe(axis: .horizontal, phase: .ended, distance: -0.2))
+        send(.swipe(axis: .horizontal, phase: .began, distance: 0.1))
+        pending.removeFirst().1() // the first swipe's re-send must not end the second
+        XCTAssertEqual(dock.map(\.phase), [1, 4, 1])
+    }
+
+    func testDisconnectMidSwipeLetsGoOfTheDock() {
+        send(.swipe(axis: .horizontal, phase: .began, distance: -0.3))
+        send(.releaseAll)
+        XCTAssertEqual(dock.last?.phase, 8)
+        gestures = []
+        send(.releaseAll)
+        XCTAssertTrue(gestures.isEmpty)
+    }
+
+    func testUnknownSpaceCountAssumesTwo() {
+        spaceCount = nil
+        send(.swipe(axis: .horizontal, phase: .began, distance: -0.5))
+        XCTAssertEqual(dock.first?.offset, 1.0)
+    }
+
+    func testChangeOrEndWithoutBeganIsIgnored() {
+        send(.swipe(axis: .horizontal, phase: .changed, distance: -0.5), .swipe(axis: .horizontal, phase: .ended, distance: -0.5))
+        XCTAssertTrue(gestures.isEmpty)
     }
 }

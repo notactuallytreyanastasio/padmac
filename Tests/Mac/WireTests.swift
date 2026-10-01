@@ -56,6 +56,7 @@ final class WireTests: XCTestCase {
             .moveBy(dx: 1.5, dy: -2), .moveTo(x: 0.1, y: 0.9),
             .button(.left, down: true), .button(.right, down: false), .button(.middle, down: true),
             .scroll(dx: 0, dy: -12.5), .key(code: 55, down: true), .text("héllo 😀\n"), .releaseAll,
+            .swipe(axis: .horizontal, phase: .began, distance: -0.25), .swipe(axis: .vertical, phase: .cancelled, distance: 0),
         ]
         for e in events {
             XCTAssertEqual(try JSONDecoder().decode(InputEvent.self, from: JSONEncoder().encode(e)), e)

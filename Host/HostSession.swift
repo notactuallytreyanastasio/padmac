@@ -33,7 +33,7 @@ final class HostSession {
         //   -inputLog <path>   append every received InputEvent as a JSON line
         let d = UserDefaults.standard
         var system = InputInjector.System.live
-        if d.bool(forKey: "dryRunInput") { system.post = { _ in } }
+        if d.bool(forKey: "dryRunInput") { system.post = { _ in }; system.postGesture = { _ in } }
         injector = InputInjector(displayID: CGMainDisplayID(), system: system)
         inputLog = d.string(forKey: "inputLog").flatMap { path in
             if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }

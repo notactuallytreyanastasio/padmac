@@ -47,8 +47,9 @@ If Bonjour can't see the Mac (e.g. over Tailscale), connect by address. The port
 | 2-finger tap | right-click | right-click there |
 | 2-finger drag | scroll | scroll |
 | touch, hold, drag | drag | — |
-| pinch | zoom (1–8×) | zoom (1–8×) |
-| 3-finger drag | pan the zoomed view | pan the zoomed view |
+| pinch | zoom (1–8×); move the pinch to pan | same |
+| 3-finger swipe left/right | next/previous desktop, following your fingers like a Mac trackpad | same |
+| 3-finger swipe up/down | Mission Control / App Exposé | same |
 
 While zoomed, the view follows the Mac cursor. The toolbar's magnifier toggles
 between the whole display and filling the iPad's short side, which is the
@@ -80,10 +81,10 @@ What runs:
 
 | Layer | Where | What it proves |
 |---|---|---|
-| `RemoteMacTests` (44) | macOS | Wire format round-trips and rejects malformed input. Framing over a real TLS-PSK socket: 5 MB messages, wrong code rejected, unknown or oversized messages hang up, video backpressure. HEVC at 5120×1440 and H.264 encoded and decoded through the real pipeline. Input logic: double-click counting, ⌘ flags on ⌘C, key repeat, text chunking, the lost-delta bug. The iPad key map checked against macOS's real US layout. The host server in dry-run mode. The display staying awake only while an iPad is connected. |
-| `RemoteMacClientTests` (9) | iPad simulator | Zoom/pan geometry: no gaps, the pinch anchor stays put, follow-the-cursor. |
+| `RemoteMacTests` (52) | macOS | Wire format round-trips and rejects malformed input. Framing over a real TLS-PSK socket: 5 MB messages, wrong code rejected, unknown or oversized messages hang up, video backpressure. HEVC at 5120×1440 and H.264 encoded and decoded through the real pipeline. Input logic: double-click counting, ⌘ flags on ⌘C, key repeat, text chunking, the lost-delta bug. The iPad key map checked against macOS's real US layout. The host server in dry-run mode. The display staying awake only while an iPad is connected. |
+| `RemoteMacClientTests` (14) | iPad simulator | Zoom/pan geometry (no gaps, the pinch anchor stays put, follow-the-cursor) and three-finger swipe axis locking. |
 | `RemoteMacUITests` (10) | iPad simulator | The real app, with real taps, drags, pinches and keyboard keys, against a real host in `-dryRunInput` mode. Assertions are on the input the host received. |
-| `probe` | macOS | Real screen capture → HEVC → TLS → decode, a stream restart, and median capture-to-decode latency under 50 ms (this Mac: ~18 ms). |
+| `probe` | macOS | Real screen capture → HEVC → TLS → decode, a stream restart, and median capture-to-decode latency under 50 ms (this Mac: ~18 ms idle, ~40 ms under heavy load). |
 
 The UI tests need the simulator's on-screen keyboard (I/O › Keyboard ›
 Connect Hardware Keyboard off). The host needs Screen Recording permission
@@ -92,12 +93,13 @@ for your terminal.
 The probe also works on its own, against any host:
 
 ```sh
-probe <host[:port]> <code> frame.png [--move] [--displays] [--clipboard] [--h264] [--latency]
+probe <host[:port]> <code> frame.png [--move] [--displays] [--clipboard] [--swipe] [--h264] [--latency]
 ```
 
 To run a second host next to an installed one, launch its binary with
 `-port 47429 -pairingCode TESTCODE`. Add `-dryRunInput YES -inputLog <path>`
-and it logs input instead of posting it.
+and it logs input instead of posting it. `-traceLatency YES` logs where the
+time goes between capture and the wire.
 
 ## What does not work / not done
 
@@ -108,6 +110,10 @@ and it logs input instead of posting it.
   resolution, so an ultrawide streams at 5120×1440. M-series iPads decode that
   easily. An A12-era iPad may not. If the picture stays black, that's the
   first suspect.
+- **Desktop swipes rely on undocumented Dock events.** The event layout is
+  Mac Mouse Fix's, verified on macOS 26.2 (`probe --swipe` changes desktop and
+  back and checks it through SkyLight). Mac Mouse Fix reports that macOS 27
+  ignores these fields, so expect swipes to stop working there.
 - **No audio.**
 - **iPadOS keeps some shortcuts.** ⌘-Tab, ⌘-Space and Globe shortcuts go to the iPad, not the Mac.
 - **Clipboard is text only.** No images or files.
