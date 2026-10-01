@@ -3,8 +3,9 @@
 #
 #   scripts/test.sh          everything that leaves this Mac's cursor and clipboard alone
 #   scripts/test.sh --live   also the probe checks that really move the cursor,
-#                            round-trip the clipboard and swipe to the next desktop
-#                            and back (don't touch the mouse meanwhile)
+#                            round-trip the clipboard, swipe to the next desktop
+#                            and back, and play a ping to check audio arrives
+#                            (don't touch the mouse meanwhile)
 #
 # Needs Screen Recording permission for your terminal (the host it starts
 # captures the screen). The iPad tests use REMOTEMAC_SIM, default "iPad Pro 13-inch (M5)".
@@ -38,7 +39,7 @@ start_host() {
   [[ -n $host_pid ]] && kill $host_pid 2>/dev/null && wait $host_pid 2>/dev/null
   : > $LOG
   $DD/Build/Products/Debug/RemoteMacHost.app/Contents/MacOS/RemoteMacHost \
-    -port $PORT -pairingCode $CODE -inputLog $LOG "$@" > $DD/host.log 2>&1 &
+    -port $PORT -pairingCode $CODE -noBonjour YES -inputLog $LOG "$@" > $DD/host.log 2>&1 &
   host_pid=$!
   for i in {1..50}; do lsof -iTCP:$PORT -sTCP:LISTEN -n >/dev/null 2>&1 && return 0; sleep 0.1; done
   print "host did not start listening on $PORT"; cat $DD/host.log; return 1
@@ -67,7 +68,7 @@ TEST_RUNNER_REMOTEMAC_HOST=127.0.0.1:$PORT TEST_RUNNER_REMOTEMAC_INPUT_LOG=$LOG 
 if [[ $LIVE == --live ]]; then
   step "Live probe: real cursor and clipboard"
   start_host
-  if $DD/Build/Products/Debug/probe 127.0.0.1:$PORT $CODE $DD/probe-live.png --move --clipboard --swipe | sed 's/^/  /'; then :; else failed+=probe-live; fi
+  if $DD/Build/Products/Debug/probe 127.0.0.1:$PORT $CODE $DD/probe-live.png --move --clipboard --swipe --audio | sed 's/^/  /'; then :; else failed+=probe-live; fi
 fi
 
 print

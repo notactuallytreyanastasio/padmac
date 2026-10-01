@@ -22,10 +22,14 @@ enum MessageType: UInt8 {
     case error = 0x04
     /// Two big-endian Float32: cursor position normalised to the streamed display.
     case cursor = 0x06
+    /// See `AudioPayload`. Only sent to a client whose Hello asked for audio.
+    case audio = 0x07
 
     // both directions
     /// UTF-8 text now on the sender's clipboard.
     case clipboard = 0x05
+    /// PNG image now on the sender's clipboard (at most 16 MB).
+    case clipboardImage = 0x08
 
     // client -> host
     case hello = 0x10
@@ -33,6 +37,8 @@ enum MessageType: UInt8 {
     case requestKeyframe = 0x12
     /// JSON `SelectDisplay`
     case selectDisplay = 0x13
+    /// One byte: 1 to receive audio, 0 to stop (the iPad's speaker button).
+    case audioEnabled = 0x14
 }
 
 enum VideoCodec: String, Codable {
@@ -69,6 +75,8 @@ struct Hello: Codable {
     var codecs: [VideoCodec]?
     /// Display to start on; absent means the Mac's main display.
     var displayID: UInt32?
+    /// Stream the Mac's sound. Absent means no.
+    var audio: Bool?
 }
 
 struct SelectDisplay: Codable {
@@ -166,6 +174,51 @@ enum FramePayload {
         var t: UInt64 = 0
         for i in 1...8 { t = t << 8 | UInt64(data[b + i]) }
         return (data[b] & 1 == 1, data[b] & 2 == 2, t, data.dropFirst(headerSize))
+    }
+}
+
+/// `[u64 BE capture time, ns on the host clock][interleaved Int16 little-endian, 2 channels, 48 kHz]`.
+///
+/// Uncompressed: 1.5 Mbit/s, less than idle video, and no codec delay. The Mac
+/// delivers 20ms (960-frame) chunks of planar Float32.
+enum AudioPayload {
+    static let sampleRate = 48_000.0
+    static let channels = 2
+    static let headerSize = 8
+
+    static func encode(captureNanos: UInt64, left: UnsafeBufferPointer<Float>, right: UnsafeBufferPointer<Float>) -> Data {
+        let frames = min(left.count, right.count)
+        var d = Data(capacity: headerSize + frames * 4)
+        withUnsafeBytes(of: captureNanos.bigEndian) { d.append(contentsOf: $0) }
+        var samples = [Int16](repeating: 0, count: frames * 2)
+        for i in 0..<frames {
+            samples[2 * i] = toInt16(left[i])
+            samples[2 * i + 1] = toInt16(right[i])
+        }
+        samples.withUnsafeBytes { raw in
+            for v in raw.bindMemory(to: Int16.self) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
+        }
+        return d
+    }
+
+    /// Interleaved samples (L R L R ...), or nil if the payload is malformed.
+    static func decode(_ data: Data) -> (captureNanos: UInt64, samples: [Int16])? {
+        let body = data.count - headerSize
+        guard body >= 0, body % (2 * channels) == 0 else { return nil }
+        let b = data.startIndex
+        var t: UInt64 = 0
+        for i in 0..<8 { t = t << 8 | UInt64(data[b + i]) }
+        var samples = [Int16](repeating: 0, count: body / 2)
+        for i in 0..<samples.count {
+            let lo = UInt16(data[b + headerSize + 2 * i]), hi = UInt16(data[b + headerSize + 2 * i + 1])
+            samples[i] = Int16(bitPattern: hi << 8 | lo)
+        }
+        return (t, samples)
+    }
+
+    static func toInt16(_ x: Float) -> Int16 {
+        guard x.isFinite else { return 0 }
+        return Int16(max(-32767, min(32767, (x * 32767).rounded())))
     }
 }
 

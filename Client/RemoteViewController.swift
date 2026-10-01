@@ -600,6 +600,13 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         paste.accessibilityLabel = "Paste iPad clipboard on the Mac"
         toolbar.addArrangedSubview(paste)
 
+        let speaker = { (on: Bool) in on ? "speaker.wave.2" : "speaker.slash" }
+        _ = button(speaker(session.audioEnabled), "Sound") { [weak self] b in
+            guard let self else { return }
+            self.session.setAudio(!self.session.audioEnabled)
+            b.configuration?.image = UIImage(systemName: speaker(self.session.audioEnabled))
+            self.flash(self.session.audioEnabled ? "Mac sound on" : "Mac sound off")
+        }
         modeButton = button("hand.point.up.left", "Touch mode") { [weak self] b in
             guard let self else { return }
             self.mode = self.mode == .trackpad ? .direct : .trackpad
@@ -626,24 +633,39 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     // MARK: Paste (UIPasteControl reads the iPad clipboard without a permission prompt)
 
     override var pasteConfiguration: UIPasteConfiguration? {
-        get { UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.plainText.identifier]) }
+        get { UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.image.identifier, UTType.plainText.identifier]) }
         set {}
     }
 
+    /// Put the iPad's clipboard on the Mac's, then press ⌘V where the Mac's focus is.
+    /// An image wins over text, as on the Mac side.
     override func paste(itemProviders: [NSItemProvider]) {
-        guard let provider = itemProviders.first(where: { $0.canLoadObject(ofClass: String.self) }) else { return }
-        _ = provider.loadObject(ofClass: String.self) { [weak self] text, _ in
-            guard let text else { return }
-            DispatchQueue.main.async {
-                guard let self else { return }
-                // Put it on the Mac's clipboard, then paste it where the Mac's focus is.
-                self.session.sendClipboard(text)
-                self.session.send(.key(code: 55, down: true))
-                self.tapKey(9) // V
-                self.session.send(.key(code: 55, down: false))
-                self.flash("Pasted on the Mac")
+        if let image = itemProviders.first(where: { $0.canLoadObject(ofClass: UIImage.self) }) {
+            _ = image.loadObject(ofClass: UIImage.self) { [weak self] object, _ in
+                guard let png = (object as? UIImage)?.pngData() else { return }
+                DispatchQueue.main.async { self?.pasteOnMac(.image(png)) }
+            }
+        } else if let text = itemProviders.first(where: { $0.canLoadObject(ofClass: String.self) }) {
+            _ = text.loadObject(ofClass: String.self) { [weak self] string, _ in
+                guard let string else { return }
+                DispatchQueue.main.async { self?.pasteOnMac(.text(string)) }
             }
         }
+    }
+
+    private enum Clip { case text(String), image(Data) }
+
+    private func pasteOnMac(_ clip: Clip) {
+        switch clip {
+        case .text(let t): session.sendClipboard(t)
+        case .image(let png):
+            guard png.count <= 16 << 20 else { return flash("Image too large to send (over 16 MB)") }
+            session.sendClipboardImage(png)
+        }
+        session.send(.key(code: 55, down: true))
+        tapKey(9) // V
+        session.send(.key(code: 55, down: false))
+        flash("Pasted on the Mac")
     }
 
     private func flash(_ text: String) {

@@ -16,6 +16,8 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         var canSend: () -> Bool
         var format: (Data) -> Void
         var frame: (Data) -> Void
+        /// An AudioPayload, every 20ms while audio is on. Called on the audio queue.
+        var audio: (Data) -> Void = { _ in }
         var stopped: (Error?) -> Void
     }
 
@@ -26,6 +28,8 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
     /// queue depth: every frame arrived ~150ms late instead of the newest ~30ms late.
     private let encodeQueue = DispatchQueue(label: "remotemac.encode", qos: .userInteractive)
     private var encoding = false
+    private let audioQueue = DispatchQueue(label: "remotemac.audio", qos: .userInteractive)
+    private var audioFormatChecked = false
     private var stream: SCStream?
     private var encoder: VideoEncoder?
     private var latest: CVPixelBuffer?
@@ -38,7 +42,7 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
 
     init(output: Output) { self.out = output }
 
-    func start(displayID wanted: CGDirectDisplayID?, maxWidth: Int, maxHeight: Int, codecs: [VideoCodec]) async throws -> ScreenInfo {
+    func start(displayID wanted: CGDirectDisplayID?, maxWidth: Int, maxHeight: Int, codecs: [VideoCodec], audio: Bool = false) async throws -> ScreenInfo {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first(where: { $0.displayID == (wanted ?? CGMainDisplayID()) })
                 ?? content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else {
@@ -64,6 +68,13 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.showsCursor = true
         config.queueDepth = 5
+        if audio {
+            // What the Mac delivers, measured: 48kHz planar Float32 stereo in 960-frame chunks.
+            config.capturesAudio = true
+            config.sampleRate = Int(AudioPayload.sampleRate)
+            config.channelCount = AudioPayload.channels
+            config.excludesCurrentProcessAudio = true
+        }
 
         let encoder = try VideoEncoder(codec: codec, width: w, height: h)
         encoder.onFormat = out.format
@@ -72,6 +83,7 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
 
         let stream = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+        if audio { try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue) }
         try await stream.startCapture()
         self.stream = stream
 
@@ -122,6 +134,7 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
     // MARK: SCStreamOutput
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
+        if type == .audio { return handleAudio(sample) }
         guard type == .screen, sample.isValid,
               let info = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
               let raw = info.first?[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
@@ -132,6 +145,27 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         dirty = true
         pump()
         scheduleRefine()
+    }
+
+    private func handleAudio(_ sample: CMSampleBuffer) {
+        guard sample.isValid, let fmt = sample.formatDescription,
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fmt)?.pointee else { return }
+        let planarFloat = asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0
+            && asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0 && asbd.mBitsPerChannel == 32
+        guard planarFloat, asbd.mSampleRate == AudioPayload.sampleRate, asbd.mChannelsPerFrame >= 1 else {
+            // Not what we asked for. Say so once and send nothing, rather than noise.
+            if !audioFormatChecked { NSLog("RemoteMac: unexpected audio format \(asbd); audio disabled") }
+            audioFormatChecked = true
+            return
+        }
+        let capture = UInt64(max(0, sample.presentationTimeStamp.seconds) * 1e9)
+        try? sample.withAudioBufferList { list, _ in
+            let left = list[0], right = list.count > 1 ? list[1] : list[0] // mono plays on both sides
+            let n = Int(left.mDataByteSize) / 4
+            let l = UnsafeBufferPointer(start: left.mData?.assumingMemoryBound(to: Float.self), count: n)
+            let r = UnsafeBufferPointer(start: right.mData?.assumingMemoryBound(to: Float.self), count: n)
+            out.audio(AudioPayload.encode(captureNanos: capture, left: l, right: r))
+        }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -149,6 +183,7 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         let capture = latestCapture, key = wantKeyframe
         wantKeyframe = false
         encodeQueue.async { [weak self] in
+            if Trace.latency { Trace.record("capture->submitted", since: capture) }
             encoder.encode(pixels, captureNanos: capture, forceKeyframe: key)
             self?.queue.async {
                 self?.encoding = false

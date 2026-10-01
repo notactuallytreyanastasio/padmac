@@ -56,10 +56,21 @@ between the whole display and filling the iPad's short side, which is the
 useful zoom for an ultrawide. A display button appears when the Mac has more
 than one active display.
 
-Clipboard text copied on the Mac shows up on the iPad right away. Anything
+Sound: the Mac's audio plays on the iPad (16-bit 48 kHz stereo, about 1.5
+Mbit/s, ~60 ms behind). The speaker button turns it off, and the choice is
+remembered. The Mac keeps playing through its own speakers too.
+
+Clipboard: text and images copied on the Mac show up on the iPad right away.
+If both are there, the image wins. Images over 16 MB are skipped. Anything
 a password manager marks as concealed stays on the Mac. Going the other way,
-the toolbar's paste button puts the iPad clipboard on the Mac and presses ⌘V.
-It's a system paste control, so iPadOS doesn't ask permission each time.
+the toolbar's paste button puts the iPad clipboard (text or image) on the Mac
+and presses ⌘V. It's a system paste control, so iPadOS doesn't ask
+permission each time.
+
+Away from home: there's nothing to set up beyond Tailscale on both devices.
+Bonjour doesn't cross Tailscale, so connect **by address** using the Mac's
+Tailscale name or 100.x address. Only a device with the pairing code can
+take over the session. Others are refused before they can disturb it.
 
 An iPad trackpad or mouse maps absolutely: hover puts the Mac cursor under it,
 click and right-click work, and two-finger scrolling scrolls. The iPad's own
@@ -116,7 +127,12 @@ time goes between capture and the wire.
   ignores these fields, so expect swipes to stop working there.
 - **No audio.**
 - **iPadOS keeps some shortcuts.** ⌘-Tab, ⌘-Space and Globe shortcuts go to the iPad, not the Mac.
-- **Clipboard is text only.** No images or files.
+- **Clipboard has no files**, only text and images.
+- **The Mac still plays its own sound** while streaming it.
+- **Latency with two streams running is unexplained.** With the iPad connected,
+  a second stream (the probe) measures ~125 ms capture-to-decode. With one
+  stream it measured 16–19 ms. The same encoder outside the host takes 26 ms
+  under the same load. See the commit log for what was ruled out.
 - **Locked-screen login is untested.** Typing your password at the lock
   screen from the iPad may be blocked by macOS secure input.
 - **Local network only by design.** The 40-bit code resists online guessing,

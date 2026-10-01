@@ -44,6 +44,20 @@ final class WireTests: XCTestCase {
         XCTAssertEqual(Array(p.body), [1, 2])
     }
 
+    func testAudioRoundTripsInterleavedAndClamped() throws {
+        let l: [Float] = [0, 0.5, -1, 2, .nan], r: [Float] = [1, -0.5, 0.25, -3, 0]
+        let data = l.withUnsafeBufferPointer { lb in r.withUnsafeBufferPointer { rb in
+            AudioPayload.encode(captureNanos: 99, left: lb, right: rb)
+        } }
+        XCTAssertEqual(data.count, AudioPayload.headerSize + 5 * 4, "16-bit stereo")
+        let (t, s) = try XCTUnwrap(AudioPayload.decode(data))
+        XCTAssertEqual(t, 99)
+        XCTAssertEqual(s, [0, 32767, 16384, -16384, -32767, 8192, 32767, -32767, 0, 0], "L R L R..., clipped, NaN silenced")
+        XCTAssertNil(AudioPayload.decode(Data(count: 7)), "shorter than the header")
+        XCTAssertNil(AudioPayload.decode(Data(count: 8 + 3)), "not whole stereo frames")
+        XCTAssertEqual(AudioPayload.decode(data.dropFirst(0))?.samples.count, 10, "slices decode")
+    }
+
     func testCursorPayload() throws {
         let c = try XCTUnwrap(CursorPayload.decode(CursorPayload.encode(x: 0.25, y: 0.75)))
         XCTAssertEqual(c.x, 0.25)
@@ -74,6 +88,7 @@ final class WireTests: XCTestCase {
         let h = try JSONDecoder().decode(Hello.self, from: Data(json.utf8))
         XCTAssertNil(h.codecs)
         XCTAssertNil(h.displayID)
+        XCTAssertNil(h.audio, "an older client gets no audio")
     }
 
     func testPairingCodes() {

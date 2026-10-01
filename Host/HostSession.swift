@@ -20,6 +20,7 @@ final class HostSession {
     private var clipboard: ClipboardWatcher?
     private var screenObserver: NSObjectProtocol?
     private var awake: PowerAssertion?
+    private let audioOn = AtomicFlag()
     private let decoder = JSONDecoder()
 
     var onStatus: ((String) -> Void)?
@@ -94,6 +95,7 @@ final class HostSession {
         case .hello:
             guard hello == nil, let h = try? decoder.decode(Hello.self, from: payload) else { return fail(.badPayload(type)) }
             hello = h
+            audioOn.value = h.audio == true
             onStatus?("Connected: \(h.clientName)")
             startStream(on: h.displayID)
             startCursorReports()
@@ -108,11 +110,17 @@ final class HostSession {
         case .selectDisplay:
             guard let s = try? decoder.decode(SelectDisplay.self, from: payload) else { return fail(.badPayload(type)) }
             startStream(on: s.displayID)
+        case .audioEnabled:
+            guard payload.count == 1 else { return fail(.badPayload(type)) }
+            audioOn.value = payload.first == 1
         case .clipboard:
             let text = String(decoding: payload, as: UTF8.self)
             // Synchronously: the iPad's paste button sends ⌘V right behind this.
-            DispatchQueue.main.sync { self.clipboard?.set(text) }
-        case .screenInfo, .videoFormat, .videoFrame, .error, .cursor:
+            DispatchQueue.main.sync { self.clipboard?.set(.text(text)) }
+        case .clipboardImage:
+            // Synchronously, for the same reason as text.
+            DispatchQueue.main.sync { self.clipboard?.set(.image(payload)) }
+        case .screenInfo, .videoFormat, .videoFrame, .error, .cursor, .audio:
             fail(.badPayload(type))
         }
     }
@@ -134,6 +142,7 @@ final class HostSession {
             canSend: { conn.canSendVideo },
             format: { conn.send(.videoFormat, $0) },
             frame: { conn.send(.videoFrame, $0) },
+            audio: { [audioOn] in if audioOn.value { conn.send(.audio, $0) } },
             stopped: { error in
                 NSLog("RemoteMac: capture stopped: \(error?.localizedDescription ?? "-")")
                 conn.cancel()
@@ -142,7 +151,7 @@ final class HostSession {
         Task {
             do {
                 let info = try await streamer.start(displayID: displayID, maxWidth: hello.maxWidth, maxHeight: hello.maxHeight,
-                                                    codecs: hello.codecs ?? [.h264])
+                                                    codecs: hello.codecs ?? [.h264], audio: hello.audio == true)
                 queue.async {
                     guard gen == self.generation else { return streamer.stop() }
                     self.injector.displayID = streamer.displayID
@@ -186,7 +195,12 @@ final class HostSession {
     private func startClipboard() {
         let conn = self.conn
         DispatchQueue.main.async {
-            let w = ClipboardWatcher { text in conn.send(.clipboard, Data(text.utf8)) }
+            let w = ClipboardWatcher { clip in
+                switch clip {
+                case .text(let text): conn.send(.clipboard, Data(text.utf8))
+                case .image(let png): conn.send(.clipboardImage, png)
+                }
+            }
             self.queue.async { self.clipboard = w }
             w.start()
         }
@@ -207,14 +221,33 @@ final class HostSession {
     }
 }
 
-/// Sends the Mac's clipboard text to the iPad when it changes, and applies the iPad's.
-/// Main thread only.
+/// Sends the Mac's clipboard to the iPad when it changes, and applies the iPad's.
+/// Main thread only. Takes the pasteboard as a parameter so tests can use a private one.
 final class ClipboardWatcher {
-    private let send: (String) -> Void
-    private var timer: Timer?
-    private var seen = NSPasteboard.general.changeCount - 1 // send what's there on connect
+    enum Clip: Equatable {
+        case text(String)
+        /// PNG data.
+        case image(Data)
+    }
 
-    init(send: @escaping (String) -> Void) { self.send = send }
+    static let maxImageBytes = 16 << 20
+    static let maxTextBytes = 1 << 20
+
+    private let pasteboard: NSPasteboard
+    private let send: (Clip) -> Void
+    private var timer: Timer?
+    private var seen: Int
+    /// The last clip that crossed the wire, either way. With Universal Clipboard
+    /// on, text the iPad receives comes back to the Mac's pasteboard a moment
+    /// later as a "new" copy. Without this the host would send it again,
+    /// iOS would sync it back again, and so on.
+    private var lastExchanged: Clip?
+
+    init(pasteboard: NSPasteboard = .general, send: @escaping (Clip) -> Void) {
+        self.pasteboard = pasteboard
+        self.send = send
+        seen = pasteboard.changeCount - 1 // send what's there on connect
+    }
 
     func start() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.poll() }
@@ -223,22 +256,53 @@ final class ClipboardWatcher {
 
     func stop() { timer?.invalidate() }
 
-    func set(_ text: String) {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(text, forType: .string)
-        seen = pb.changeCount // don't echo it back
+    func set(_ clip: Clip) {
+        lastExchanged = clip
+        pasteboard.clearContents()
+        switch clip {
+        case .text(let text):
+            pasteboard.setString(text, forType: .string)
+        case .image(let png):
+            // Mac apps differ in which they read, so offer both.
+            pasteboard.declareTypes([.png, .tiff], owner: nil)
+            pasteboard.setData(png, forType: .png)
+            if let tiff = NSImage(data: png)?.tiffRepresentation { pasteboard.setData(tiff, forType: .tiff) }
+        }
+        seen = pasteboard.changeCount // don't echo it back
     }
 
-    private func poll() {
-        let pb = NSPasteboard.general
-        guard pb.changeCount != seen else { return }
-        seen = pb.changeCount
+    /// Checks for a change now. The timer calls this twice a second.
+    func poll() {
+        guard pasteboard.changeCount != seen else { return }
+        seen = pasteboard.changeCount
+        guard let clip = current(), clip != lastExchanged else { return }
+        lastExchanged = clip
+        send(clip)
+    }
+
+    /// An image wins over text: copying an image usually also puts its URL or
+    /// file name on the pasteboard, and the image is what was meant.
+    private func current() -> Clip? {
+        let types = pasteboard.types ?? []
         // Password managers mark secrets; those stay on the Mac.
-        let skip: Set<String> = ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"]
-        guard !(pb.types ?? []).contains(where: { skip.contains($0.rawValue) }),
-              let text = pb.string(forType: .string), !text.isEmpty, text.utf8.count < 1 << 20 else { return }
-        send(text)
+        let secret: Set<String> = ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"]
+        if types.contains(where: { secret.contains($0.rawValue) }) { return nil }
+
+        if let png = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff).flatMap(Self.png(fromTIFF:)) {
+            guard png.count <= Self.maxImageBytes else {
+                NSLog("RemoteMac: clipboard image of \(png.count) bytes is over the \(Self.maxImageBytes)-byte limit; not sent")
+                return nil
+            }
+            return .image(png)
+        }
+        if let text = pasteboard.string(forType: .string), !text.isEmpty, text.utf8.count <= Self.maxTextBytes {
+            return .text(text)
+        }
+        return nil
+    }
+
+    private static func png(fromTIFF tiff: Data) -> Data? {
+        NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
     }
 }
 
@@ -259,5 +323,15 @@ final class PowerAssertion {
     deinit {
         if held { IOPMAssertionRelease(noSleep) }
         if activity != 0 { IOPMAssertionRelease(activity) }
+    }
+}
+
+/// A Bool shared between the session queue and the audio queue.
+final class AtomicFlag {
+    private let lock = NSLock()
+    private var v = false
+    var value: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return v }
+        set { lock.lock(); v = newValue; lock.unlock() }
     }
 }

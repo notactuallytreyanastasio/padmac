@@ -1,6 +1,7 @@
 import AVFoundation
 import Network
 import UIKit
+import UniformTypeIdentifiers
 
 protocol VideoSink: AnyObject {
     /// Called on the session queue.
@@ -40,6 +41,9 @@ final class RemoteSession: ObservableObject {
     private var attempt = 0
     private var displayID: UInt32?
     private var foreground: NSObjectProtocol?
+    private let player = AudioPlayer()
+    /// The speaker button. Remembered between launches; on by default.
+    @Published private(set) var audioEnabled = UserDefaults.standard.object(forKey: "audio") as? Bool ?? true
 
     init(hostName: String, endpoint: NWEndpoint, code: String) {
         self.hostName = hostName
@@ -57,6 +61,7 @@ final class RemoteSession: ObservableObject {
 
     func stop() {
         stopped = true
+        player.stop()
         send(.releaseAll)
         conn?.cancel()
         conn = nil
@@ -75,8 +80,19 @@ final class RemoteSession: ObservableObject {
         conn?.send(.selectDisplay, json: SelectDisplay(displayID: id))
     }
 
+    func setAudio(_ on: Bool) {
+        audioEnabled = on
+        UserDefaults.standard.set(on, forKey: "audio")
+        conn?.send(.audioEnabled, Data([on ? 1 : 0]))
+        if !on { player.stop() }
+    }
+
     func sendClipboard(_ text: String) {
         conn?.send(.clipboard, Data(text.utf8))
+    }
+
+    func sendClipboardImage(_ png: Data) {
+        conn?.send(.clipboardImage, png)
     }
 
     private func connect() {
@@ -87,7 +103,7 @@ final class RemoteSession: ObservableObject {
         let hello = Hello(clientName: UIDevice.current.name,
                           maxWidth: min(8192, Int(max(native.width, native.height)) * 2),
                           maxHeight: min(8192, Int(min(native.width, native.height)) * 2),
-                          codecs: [.hevc, .h264], displayID: displayID)
+                          codecs: [.hevc, .h264], displayID: displayID, audio: audioEnabled)
         let c = FramedConnection(NWConnection(to: endpoint, using: PairingSecurity.parameters(code: code)), queue: queue)
         conn = c
         queue.async { self.hostError = nil }
@@ -148,9 +164,15 @@ final class RemoteSession: ObservableObject {
         case .clipboard:
             let text = String(decoding: payload, as: UTF8.self)
             DispatchQueue.main.async { UIPasteboard.general.string = text }
+        case .clipboardImage:
+            let png = payload
+            DispatchQueue.main.async { UIPasteboard.general.setData(png, forPasteboardType: UTType.png.identifier) }
+        case .audio:
+            guard let (_, samples) = AudioPayload.decode(payload) else { return fail(type) }
+            player.enqueue(samples)
         case .error:
             hostError = String(decoding: payload, as: UTF8.self)
-        case .hello, .input, .requestKeyframe, .selectDisplay:
+        case .hello, .input, .requestKeyframe, .selectDisplay, .audioEnabled:
             fail(type)
         }
     }

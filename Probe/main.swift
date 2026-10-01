@@ -9,13 +9,13 @@ import UniformTypeIdentifiers
 import VideoToolbox
 
 // End-to-end check of a running host, from the client's side of the wire:
-//   probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe]
+//   probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio]
 // Connects over TLS-PSK, decodes video with VideoToolbox, writes a sharp frame
 // as PNG, and prints PASS/FAIL for each optional check. Run it on the host Mac:
 // the checks read the real cursor and pasteboard back.
 
 let args = CommandLine.arguments
-guard args.count >= 3 else { print("usage: probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe]"); exit(2) }
+guard args.count >= 3 else { print("usage: probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio]"); exit(2) }
 let hostPort = args[1].split(separator: ":")
 let host = String(hostPort[0]), port = hostPort.count > 1 ? UInt16(hostPort[1])! : Wire.port
 let code = args[2]
@@ -36,6 +36,8 @@ var wrote = false
 var failures = 0
 var clipboardReceived: [String] = []
 var latencies: [Double] = []
+var audioFrames = 0, audioPeak: Int16 = 0, audioLatency: [Double] = []
+var audioFirst: Date?, audioLast: Date?
 var arrivals: [Double] = []
 var worst: [(ms: Double, index: Int, bytes: Int, key: Bool)] = []
 
@@ -100,11 +102,27 @@ func runSwipeChecks(_ info: ScreenInfo) {
     }
 }
 
-let savedClipboard = NSPasteboard.general.string(forType: .string)
+/// Everything on the pasteboard, every type of every item, so it can be put back exactly.
+let savedClipboard: [[NSPasteboard.PasteboardType: Data]] = (NSPasteboard.general.pasteboardItems ?? []).map { item in
+    Dictionary(uniqueKeysWithValues: item.types.compactMap { t in item.data(forType: t).map { (t, $0) } })
+}
 func restoreClipboard() {
     guard flags.contains("--clipboard") else { return }
-    NSPasteboard.general.clearContents()
-    if let savedClipboard { NSPasteboard.general.setString(savedClipboard, forType: .string) }
+    let pb = NSPasteboard.general
+    pb.clearContents()
+    pb.writeObjects(savedClipboard.map { types in
+        let item = NSPasteboardItem()
+        for (t, d) in types { item.setData(d, forType: t) }
+        return item
+    })
+}
+var imagesReceived: [Data] = []
+
+func testImage(_ w: Int, _ h: Int) -> NSBitmapImageRep {
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
+                               hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: w * 4, bitsPerPixel: 32)!
+    for i in 0..<(w * h * 4) { rep.bitmapData![i] = UInt8(i % 253) }
+    return rep
 }
 
 func runClipboardChecks() {
@@ -130,7 +148,31 @@ func runClipboardChecks() {
                 pb.declareTypes([.string, NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")], owner: nil)
                 pb.setString("hunter2", forType: .string)
             }
-            after(1.0) { check(clipboardReceived.count == n, "concealed clipboard item not sent") }
+            after(1.0) {
+                check(clipboardReceived.count == n, "concealed clipboard item not sent")
+                runImageClipboardChecks()
+            }
+        }
+    }
+}
+
+func runImageClipboardChecks() {
+    // iPad -> Mac: a PNG lands on the Mac pasteboard as PNG and TIFF.
+    let png = testImage(64, 48).representation(using: .png, properties: [:])!
+    conn.send(.clipboardImage, png)
+    after(0.5) {
+        let (gotPNG, tiffWidth) = DispatchQueue.main.sync {
+            (NSPasteboard.general.data(forType: .png), NSPasteboard.general.data(forType: .tiff).flatMap { NSBitmapImageRep(data: $0)?.pixelsWide })
+        }
+        check(gotPNG == png && tiffWidth == 64, "clipboard image to Mac: PNG \(gotPNG == png ? "identical" : "missing"), TIFF width \(tiffWidth.map(String.init) ?? "missing")")
+        // Mac -> iPad: a TIFF-only image (what many Mac apps write) arrives as PNG.
+        DispatchQueue.main.sync {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setData(testImage(120, 90).tiffRepresentation!, forType: .tiff)
+        }
+        after(1.0) {
+            let rep = imagesReceived.last.flatMap { NSBitmapImageRep(data: $0) }
+            check(rep?.pixelsWide == 120 && rep?.pixelsHigh == 90, "clipboard image from Mac: \(rep.map { "\($0.pixelsWide)x\($0.pixelsHigh)" } ?? "nothing")")
         }
     }
 }
@@ -138,7 +180,8 @@ func runClipboardChecks() {
 conn.onReady = {
     print("TLS ready")
     conn.send(.hello, json: Hello(clientName: "probe", maxWidth: 8192, maxHeight: 8192,
-                                  codecs: flags.contains("--h264") ? [.h264] : [.hevc, .h264]))
+                                  codecs: flags.contains("--h264") ? [.h264] : [.hevc, .h264],
+                                  audio: flags.contains("--audio")))
 }
 conn.onClose = { error in
     print("closed: \(error.map { "\($0)" } ?? "clean")")
@@ -156,6 +199,15 @@ conn.onMessage = { type, payload in
             if flags.contains("--move") { runMoveChecks(info) }
             if flags.contains("--clipboard") { after(2.5, runClipboardChecks) }
             if flags.contains("--swipe") { after(0.5) { runSwipeChecks(info) } }
+            if flags.contains("--audio") {
+                // Something for the Mac to play; the host must capture it.
+                after(1.0) {
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+                    p.arguments = ["/System/Library/Sounds/Ping.aiff"]
+                    try? p.run()
+                }
+            }
             if flags.contains("--displays") {
                 // With one display, re-selecting it still exercises the restart path.
                 let target = info.displays.first(where: { $0.id != info.displayID }) ?? info.displays[0]
@@ -212,6 +264,17 @@ conn.onMessage = { type, payload in
     case .cursor:
         guard CursorPayload.decode(payload) != nil else { print("FAIL bad cursor payload"); exit(1) }
         cursorReports += 1
+    case .audio:
+        guard let (t, samples) = AudioPayload.decode(payload) else { print("FAIL bad audio payload"); exit(1) }
+        let now = Date()
+        audioFirst = audioFirst ?? now
+        audioLast = now
+        audioFrames += samples.count / 2
+        audioPeak = max(audioPeak, samples.map { $0 == .min ? .max : abs($0) }.max() ?? 0)
+        let arrived = UInt64(CMClockGetTime(CMClockGetHostTimeClock()).seconds * 1e9)
+        if t > 0, arrived > t { audioLatency.append(Double(arrived - t) / 1e6) }
+    case .clipboardImage:
+        imagesReceived.append(payload)
     case .clipboard:
         clipboardReceived.append(String(decoding: payload, as: UTF8.self))
     case .error:
@@ -222,12 +285,22 @@ conn.onMessage = { type, payload in
 }
 conn.start()
 
-let duration = flags.contains("--clipboard") || flags.contains("--swipe") ? 6.5 : 4.5
+let duration = flags.contains("--clipboard") ? 8.5 : flags.contains("--swipe") || flags.contains("--audio") ? 6.5 : 4.5
 DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
     let secs = Date().timeIntervalSince(start)
     print(String(format: "%d frames (%d key), %d decoded, %.1f KB avg, %.2f Mbit/s over %.1fs, %d cursor reports",
                  frames, keyframes, decoded, Double(bytes) / Double(max(frames, 1)) / 1024, Double(bytes) * 8 / secs / 1e6, secs, cursorReports))
     check(frames > 0 && decoded >= frames - 2, "video decodes")
+    if flags.contains("--audio") {
+        let secs = max(0.001, (audioLast ?? Date()).timeIntervalSince(audioFirst ?? Date()))
+        let rate = Double(audioFrames) / secs
+        check(abs(rate - 48_000) < 48_000 * 0.15, String(format: "audio arrives at %.0f frames/s (48000 expected)", rate))
+        check(audioPeak > 1600, "the ping was heard: peak \(audioPeak) of 32767")
+        if !audioLatency.isEmpty {
+            let l = audioLatency.sorted()
+            print(String(format: "audio capture-to-arrival: p50 %.1fms  p95 %.1fms", l[l.count / 2], l[min(l.count - 1, Int(Double(l.count) * 0.95))]))
+        }
+    }
     if !latencies.isEmpty {
         let l = latencies.sorted()
         func pct(_ p: Double) -> Double { l[min(l.count - 1, Int(Double(l.count) * p))] }

@@ -18,7 +18,10 @@ final class HostServer {
     func start(code: String, name: String) throws {
         stop()
         let listener = try NWListener(using: PairingSecurity.parameters(code: code), on: NWEndpoint.Port(rawValue: port)!)
-        listener.service = NWListener.Service(name: name, type: Wire.serviceType)
+        // `-noBonjour YES` keeps a development or test host out of the iPad's list.
+        if !UserDefaults.standard.bool(forKey: "noBonjour") {
+            listener.service = NWListener.Service(name: name, type: Wire.serviceType)
+        }
         listener.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready: self?.onStatus?("Waiting for iPad on port \(self?.port ?? Wire.port)")
