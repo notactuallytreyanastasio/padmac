@@ -64,7 +64,7 @@ targets:
     scheme: {}
     type: tool
     platform: macOS
-    sources: [Probe, Shared, Host/DockSwipe.swift]
+    sources: [Probe, Shared, Host/DockSwipe.swift, Client/KeyRemapper.swift]
     settings:
       base:
         CODE_SIGN_IDENTITY: "-"
@@ -92,7 +92,7 @@ targets:
   RemoteMacClientTests:
     type: bundle.unit-test
     platform: iOS
-    sources: [Tests/Client, Client/Viewport.swift, Client/SwipeTracker.swift, Client/PointerAcceleration.swift, Client/AudioPlayer.swift, Shared/Wire.swift]
+    sources: [Tests/Client, Client/Viewport.swift, Client/SwipeTracker.swift, Client/PointerAcceleration.swift, Client/AudioPlayer.swift, Client/KeyRemapper.swift, Shared/Wire.swift]
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

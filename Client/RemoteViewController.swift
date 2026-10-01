@@ -32,6 +32,9 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     private var sticky = Set<UInt16>()
     private var dragging = false
     private var accel = PointerAcceleration()
+    private var remapper = KeyRemapper()
+    private var commandHeld = false
+    private var leftWithCommandHeld = false
     private var scrolling = false
     private var momentum: ScrollMomentum?
     private var momentumLink: CADisplayLink?
@@ -80,7 +83,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         }
 
         keys.frame = .zero
-        keys.onKey = { [weak self] code, down in self?.session.send(.key(code: code, down: down)) }
+        keys.onKey = { [weak self] code, down in self?.hardwareKey(code, down) }
         keys.onText = { [weak self] in self?.typeSoft($0) }
         keys.onDelete = { [weak self] in self?.tapKey(51) }
         keys.accessory = makeAccessoryBar()
@@ -90,12 +93,28 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         installPointerGestures()
         installToolbar()
 
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.leftWithCommandHeld else { return }
+            self.leftWithCommandHeld = false
+            self.flash("iPadOS keeps ⌘Tab and ⌘Space. Use ⌥Tab and ⌥Space for the Mac's.", seconds: 4)
+        }
+
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             // Keys held when the app lost focus would otherwise stay down on the Mac.
-            self?.stopMomentum()
-            self?.session.send(.releaseAll)
-            self?.clearSticky()
+            guard let self else { return }
+            // ⌘ down as the app loses focus is almost always ⌘Tab or ⌘Space taken by iPadOS.
+            self.leftWithCommandHeld = self.commandHeld
+            self.commandHeld = false
+            self.remapper.reset()
+            self.stopMomentum()
+            self.session.send(.releaseAll)
+            self.clearSticky()
         }
+    }
+
+    private func hardwareKey(_ code: UInt16, _ down: Bool) {
+        if code == 55 || code == 54 { commandHeld = down }
+        for k in remapper.handle(code, down: down) { session.send(.key(code: k.code, down: k.down)) }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -668,7 +687,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         flash("Pasted on the Mac")
     }
 
-    private func flash(_ text: String) {
+    private func flash(_ text: String, seconds: TimeInterval = 1.5) {
         let label = UILabel()
         label.text = "  \(text)  "
         label.textColor = .white
@@ -682,6 +701,6 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
             label.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
             label.heightAnchor.constraint(equalToConstant: 36),
         ])
-        UIView.animate(withDuration: 0.3, delay: 1.5, options: []) { label.alpha = 0 } completion: { _ in label.removeFromSuperview() }
+        UIView.animate(withDuration: 0.3, delay: seconds, options: []) { label.alpha = 0 } completion: { _ in label.removeFromSuperview() }
     }
 }

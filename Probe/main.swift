@@ -9,13 +9,13 @@ import UniformTypeIdentifiers
 import VideoToolbox
 
 // End-to-end check of a running host, from the client's side of the wire:
-//   probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio]
+//   probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys]
 // Connects over TLS-PSK, decodes video with VideoToolbox, writes a sharp frame
 // as PNG, and prints PASS/FAIL for each optional check. Run it on the host Mac:
 // the checks read the real cursor and pasteboard back.
 
 let args = CommandLine.arguments
-guard args.count >= 3 else { print("usage: probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio]"); exit(2) }
+guard args.count >= 3 else { print("usage: probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys]"); exit(2) }
 let hostPort = args[1].split(separator: ":")
 let host = String(hostPort[0]), port = hostPort.count > 1 ? UInt16(hostPort[1])! : Wire.port
 let code = args[2]
@@ -103,6 +103,58 @@ func runSwipeChecks(_ info: ScreenInfo) {
 }
 
 /// Everything on the pasteboard, every type of every item, so it can be put back exactly.
+/// ⌥Tab and ⌥Space typed on an iPad keyboard, through the same KeyRemapper the
+/// app uses, must work the Mac's app switcher and Spotlight.
+var remapper = KeyRemapper()
+/// Typed at human speed, 80ms between physical key events, as someone holding ⌥ would.
+func physical(_ keys: (UInt16, Bool)...) {
+    for (i, k) in keys.enumerated() {
+        after(Double(i) * 0.08) {
+            for out in remapper.handle(k.0, down: k.1) { conn.send(.input, json: InputEvent.key(code: out.code, down: out.down)) }
+        }
+    }
+}
+/// Asks LaunchServices directly. NSWorkspace.frontmostApplication never updates
+/// in a process that isn't running an AppKit run loop, so it kept reporting the
+/// app from launch and made a working ⌘Tab look broken (and a broken one pass).
+func frontmost() -> String? {
+    func run(_ args: [String]) -> String {
+        let p = Process(), out = Pipe()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/lsappinfo")
+        p.arguments = args
+        p.standardOutput = out
+        try? p.run(); p.waitUntilExit()
+        return String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let line = run(["info", "-only", "bundleID", run(["front"])]) // "CFBundleIdentifier"="com.example"
+    return line.split(separator: "\"").dropFirst(2).first.map(String.init) // ["CFBundleIdentifier", "=", id]
+}
+func spotlightOpen() -> Bool {
+    let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+    return windows.contains { ($0[kCGWindowOwnerName as String] as? String) == "Spotlight" && ($0[kCGWindowLayer as String] as? Int ?? 0) > 0 }
+}
+
+func runKeyChecks() {
+    let start = frontmost()
+    physical((58, true), (48, true), (48, false), (58, false)) // ⌥Tab
+    after(1.0) {
+        let switched = frontmost()
+        check(switched != nil && switched != start, "⌥Tab switched the Mac's app: \(start ?? "?") -> \(switched ?? "?")")
+        physical((58, true), (48, true), (48, false), (58, false)) // and back
+        after(1.0) {
+            let back = frontmost()
+            check(back != nil && back == start, "⌥Tab again returned to \(start ?? "?"): at \(back ?? "?")")
+            let before = spotlightOpen()
+            physical((58, true), (49, true), (49, false), (58, false)) // ⌥Space
+            after(1.0) {
+                check(!before && spotlightOpen(), "⌥Space opened Spotlight")
+                physical((53, true), (53, false)) // Escape
+                after(1.5) { check(!spotlightOpen(), "Escape closed it") }
+            }
+        }
+    }
+}
+
 let savedClipboard: [[NSPasteboard.PasteboardType: Data]] = (NSPasteboard.general.pasteboardItems ?? []).map { item in
     Dictionary(uniqueKeysWithValues: item.types.compactMap { t in item.data(forType: t).map { (t, $0) } })
 }
@@ -199,6 +251,7 @@ conn.onMessage = { type, payload in
             if flags.contains("--move") { runMoveChecks(info) }
             if flags.contains("--clipboard") { after(2.5, runClipboardChecks) }
             if flags.contains("--swipe") { after(0.5) { runSwipeChecks(info) } }
+            if flags.contains("--keys") { after(0.5, runKeyChecks) }
             if flags.contains("--audio") {
                 // Something for the Mac to play; the host must capture it.
                 after(1.0) {
@@ -285,7 +338,7 @@ conn.onMessage = { type, payload in
 }
 conn.start()
 
-let duration = flags.contains("--clipboard") ? 8.5 : flags.contains("--swipe") || flags.contains("--audio") ? 6.5 : 4.5
+let duration = flags.contains("--clipboard") ? 8.5 : flags.contains("--keys") ? 8.5 : flags.contains("--swipe") || flags.contains("--audio") ? 6.5 : 4.5
 DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
     let secs = Date().timeIntervalSince(start)
     print(String(format: "%d frames (%d key), %d decoded, %.1f KB avg, %.2f Mbit/s over %.1fs, %d cursor reports",

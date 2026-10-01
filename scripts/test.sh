@@ -4,7 +4,8 @@
 #   scripts/test.sh          everything that leaves this Mac's cursor and clipboard alone
 #   scripts/test.sh --live   also the probe checks that really move the cursor,
 #                            round-trip the clipboard, swipe to the next desktop
-#                            and back, and play a ping to check audio arrives
+#                            and back, play a ping to check audio arrives, and
+#                            use ⌥Tab / ⌥Space to switch apps and open Spotlight
 #                            (don't touch the mouse meanwhile)
 #
 # Needs Screen Recording permission for your terminal (the host it starts
@@ -74,7 +75,7 @@ TEST_RUNNER_REMOTEMAC_HOST=127.0.0.1:$PORT TEST_RUNNER_REMOTEMAC_INPUT_LOG=$LOG 
 if [[ $LIVE == --live ]]; then
   step "Live probe: real cursor and clipboard"
   start_host
-  if $DD/Build/Products/Debug/probe 127.0.0.1:$PORT $CODE $DD/probe-live.png --move --clipboard --swipe --audio | sed 's/^/  /'; then :; else failed+=probe-live; fi
+  if $DD/Build/Products/Debug/probe 127.0.0.1:$PORT $CODE $DD/probe-live.png --move --clipboard --swipe --audio --keys | sed 's/^/  /'; then :; else failed+=probe-live; fi
 fi
 
 print

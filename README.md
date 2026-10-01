@@ -77,7 +77,17 @@ click and right-click work, and two-finger scrolling scrolls. The iPad's own
 pointer is hidden because the Mac's cursor is in the video.
 
 A hardware keyboard sends real key codes, including modifiers and arrow and
-function keys, with key repeat. The on-screen keyboard (toolbar ⌨) types
+function keys, with key repeat. iPadOS keeps ⌘Tab and ⌘Space for itself (no
+app can capture them), so ⌥ stands in:
+
+| On the iPad keyboard | On the Mac |
+|---|---|
+| ⌥Tab, keep holding ⌥, Tab / ⇧Tab, release ⌥ | ⌘Tab app switcher |
+| ⌥` | ⌘` next window of the app |
+| ⌥Space | ⌘Space Spotlight |
+
+⌥ with any other key is passed through unchanged. If you press ⌘Tab out of
+habit and iPadOS switches apps, Remote Mac reminds you when you come back. The on-screen keyboard (toolbar ⌨) types
 literal text and has an accessory row: esc, tab, sticky ⌃⌥⌘⇧ and arrows.
 Sticky modifiers apply to the next key, so ⌘ then `c` copies.
 
@@ -126,7 +136,8 @@ time goes between capture and the wire.
   back and checks it through SkyLight). Mac Mouse Fix reports that macOS 27
   ignores these fields, so expect swipes to stop working there.
 - **No audio.**
-- **iPadOS keeps some shortcuts.** ⌘-Tab, ⌘-Space and Globe shortcuts go to the iPad, not the Mac.
+- **iPadOS keeps some shortcuts.** ⌘Tab and ⌘Space have ⌥ stand-ins (above).
+  ⌘H, and Globe shortcuts, still go to the iPad.
 - **Clipboard has no files**, only text and images.
 - **The Mac still plays its own sound** while streaming it.
 - **Two streams at once are slow.** While an iPad is connected, a second
