@@ -4,10 +4,18 @@
 set -euo pipefail
 cd "${0:A:h}/.."
 xcodegen generate -q
+# A bundle ID belongs to the first Apple account that signs it, so the
+# project's own (com.bgrayson.remotemac.ipad) is taken. Derive one from this
+# Mac's hardware ID instead: unique to you, and the same on every rebuild, so
+# re-sideloading replaces the app rather than adding a second copy.
+# Set REMOTEMAC_BUNDLE_ID to choose your own.
+mac_id=$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/{print $4}' | shasum | cut -c1-8)
+bundle_id=${REMOTEMAC_BUNDLE_ID:-io.github.remotemac.ipad-$mac_id}
 xcodebuild -project RemoteMac.xcodeproj -scheme RemoteMac -configuration Release \
   -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
-  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build | grep -E "error:|BUILD" 
+  PRODUCT_BUNDLE_IDENTIFIER=$bundle_id \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build | grep -E "error:|BUILD"
 rm -rf build/ipa && mkdir -p build/ipa/Payload
 cp -R build/Build/Products/Release-iphoneos/RemoteMac.app build/ipa/Payload/
 (cd build/ipa && zip -qry ../../RemoteMac.ipa Payload)
-echo "Wrote $(pwd)/RemoteMac.ipa"
+echo "Wrote $(pwd)/RemoteMac.ipa (bundle ID $bundle_id)"

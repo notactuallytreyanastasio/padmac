@@ -3,8 +3,23 @@
 set -euo pipefail
 cd "${0:A:h}/.."
 xcodegen generate -q
-xcodebuild -project RemoteMac.xcodeproj -scheme RemoteMacHost -configuration Release \
-  -destination 'platform=macOS' -derivedDataPath build -allowProvisioningUpdates build | grep -E "error:|BUILD"
+build() {
+  xcodebuild -project RemoteMac.xcodeproj -scheme RemoteMacHost -configuration Release \
+    -destination 'platform=macOS' -derivedDataPath build "$@" build > build/host.log 2>&1
+}
+mkdir -p build
+# project.yml signs with the author's developer team. Anyone else's Xcode can't
+# sign as that team, so fall back to a local (ad-hoc) signature, which is all a
+# Mac needs to run an app built on it. The catch: macOS ties Screen Recording
+# and Accessibility to the signature, and an ad-hoc one changes on every build,
+# so after rebuilding you grant both again.
+if build -allowProvisioningUpdates; then
+  grep -E "BUILD" build/host.log
+else
+  echo "Couldn't sign with the project's developer team; signing locally instead."
+  build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= || { grep -E "error:" build/host.log; echo "Build failed. Full log: build/host.log" >&2; exit 1; }
+  grep -E "BUILD" build/host.log
+fi
 pkill -x RemoteMacHost || true
 # Opening while the old one is still exiting fails with LaunchServices error -600.
 for i in {1..50}; do pgrep -x RemoteMacHost >/dev/null || break; sleep 0.1; done
