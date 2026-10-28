@@ -121,7 +121,7 @@ class RemoteMacUITests: XCTestCase {
 
     func testZoomButtonTogglesFillAndDoesNotClickTheMac() {
         app.buttons["Zoom"].tap()
-        XCTAssertGreaterThan(zoom, 1.5, "fills the short side")
+        XCTAssertGreaterThanOrEqual(zoom, 1.5, "fills the short side, or 2x when filling would barely zoom")
         app.buttons["Zoom"].tap()
         XCTAssertEqual(zoom, 1, accuracy: 0.01)
         XCTAssertEqual(buttons(log.waitFor(settle: 0.5) { _ in false }), [], "toolbar taps stay on the iPad")
