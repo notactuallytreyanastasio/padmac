@@ -508,7 +508,8 @@ starts in trackpad mode, the Duo app in direct mode.
 While zoomed, the view follows the Mac cursor, except while a finger is down
 in direct mode, so the picture doesn't slide out from under it. The toolbar's magnifier toggles
 between the whole display and filling the iPad's short side, which is the
-useful zoom for an ultrawide. A display button appears when the Mac has more
+useful zoom for an ultrawide. When filling would barely magnify (under 1.5×,
+as with a window already in the phone's shape), it zooms 2× instead. A display button appears when the Mac has more
 than one active display.
 
 Sound: the Mac's audio plays on the iPad (16-bit 48 kHz stereo, about 1.5
@@ -582,9 +583,9 @@ again. When you disconnect, every window goes back where it was.
 Everything else is as in the table above. When the on-screen keyboard opens,
 the Mac window is resized to the space above it and the toolbar, so the field
 you're typing in stays visible; it grows back when the keyboard closes. The
-window button in the toolbar
-lists the windows, switches between one window and the whole display (on any
-device; the choice is remembered), and sets **Mac text size**.
+window button in the toolbar switches between one window and the whole display
+(on any device; the choice is remembered), sets **Mac text size**, and below
+those lists the windows.
 
 How big the window gets: about 840 Mac points wide in portrait, which most
 Mac apps accept, and at least 600 tall, in the shape of the phone's screen

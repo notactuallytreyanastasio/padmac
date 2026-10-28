@@ -909,16 +909,20 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         zoomButton = button("plus.magnifyingglass", "Zoom") { [weak self] _ in
             guard let self else { return }
             // Toggle between the whole display and filling the iPad's short side, centred on the cursor's area.
+            // A picture that nearly fills already (a window in the phone's own shape: 1.1-1.3x) gets 2x
+            // instead, or the button would seem to do nothing.
             if self.viewport.isZoomed {
                 self.viewport.set(zoom: 1, offset: .zero)
             } else {
-                let z = self.viewport.fillZoom > 1.01 ? self.viewport.fillZoom : 2
+                let z = self.viewport.fillZoom >= 1.5 ? self.viewport.fillZoom : 2
                 self.viewport.zoom(to: z, keeping: CGPoint(x: self.view.bounds.midX, y: self.view.bounds.midY))
             }
             self.applyZoom()
         }
         let windows = button("macwindow.on.rectangle", "Windows") { _ in }
         windows.showsMenuAsPrimaryAction = true
+        // The controls first, always: a long window list put them off the bottom of a phone screen.
+        windows.preferredMenuElementOrder = .fixed
         // Built when opened: the window list is the one from the latest switch.
         windows.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in
             guard let self else { return done([]) }
@@ -932,8 +936,8 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
             let text = UIMenu(title: "Mac text size", image: UIImage(systemName: "textformat.size"), children: sizes.map { name, k in
                 UIAction(title: name, state: abs(self.textScale - k) < 0.01 ? .on : .off) { [weak self] _ in self?.setTextScale(k) }
             })
-            done([UIMenu(title: "Swipe three fingers sideways to change window", options: .displayInline, children: self.windowActions()),
-                  UIMenu(options: .displayInline, children: [text, mode])])
+            done([UIMenu(options: .displayInline, children: [mode, text]),
+                  UIMenu(title: "Swipe three fingers sideways to change window", options: .displayInline, children: self.windowActions())])
         }])
         displayButton = button("display.2", "Display") { _ in }
         displayButton.showsMenuAsPrimaryAction = true
