@@ -5,7 +5,8 @@
 #   scripts/test.sh --live   also the probe checks that really move the cursor,
 #                            round-trip the clipboard, swipe to the next desktop
 #                            and back, play a ping to check audio arrives, and
-#                            use ⌥Tab / ⌥Space to switch apps and open Spotlight
+#                            use ⌥Tab / ⌥Space to switch apps and open Spotlight,
+#                            and resize real windows in window mode and put them back
 #                            (don't touch the mouse meanwhile)
 #
 # Needs Screen Recording permission for your terminal (the host it starts
@@ -56,8 +57,8 @@ step "Build host and probe"
 xcb host-build build -scheme RemoteMacHost -destination platform=macOS -allowProvisioningUpdates &&
 xcb probe-build build -scheme probe -destination platform=macOS
 
-step "Start dry-run host on :$PORT (input is logged, not posted)"
-start_host -dryRunInput YES && print "  pid $host_pid"
+step "Start dry-run host on :$PORT (input is logged, not posted; windows are never resized)"
+start_host -dryRunInput YES -dryRunWindows YES && print "  pid $host_pid"
 
 step "Probe: real capture -> HEVC -> TLS -> decode, and a stream restart"
 latency_flag=()
@@ -76,6 +77,8 @@ if [[ $LIVE == --live ]]; then
   step "Live probe: real cursor and clipboard"
   start_host
   if $DD/Build/Products/Debug/probe 127.0.0.1:$PORT $CODE $DD/probe-live.png --move --clipboard --swipe --audio --keys | sed 's/^/  /'; then :; else failed+=probe-live; fi
+  start_host
+  if $DD/Build/Products/Debug/probe 127.0.0.1:$PORT $CODE $DD/probe-window.png --window | sed 's/^/  /'; then :; else failed+=probe-window; fi
 fi
 
 print

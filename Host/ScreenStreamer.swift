@@ -42,10 +42,14 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
 
     init(output: Output) { self.out = output }
 
-    func start(displayID wanted: CGDirectDisplayID?, maxWidth: Int, maxHeight: Int, codecs: [VideoCodec], audio: Bool = false, quality: StreamQuality = .full) async throws -> ScreenInfo {
+    /// With `window`, streams just that window: its app's windows, cropped to
+    /// its frame. Including the app rather than the one window keeps its menus,
+    /// popovers and sheets, which are separate windows, in the picture.
+    func start(displayID wanted: CGDirectDisplayID?, window: MacWindow? = nil, maxWidth: Int, maxHeight: Int, codecs: [VideoCodec], audio: Bool = false, quality: StreamQuality = .full) async throws -> ScreenInfo {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let display = content.displays.first(where: { $0.displayID == (wanted ?? CGMainDisplayID()) })
-                ?? content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else {
+        let preferred = window.flatMap { w in content.displays.first { $0.frame.contains(CGPoint(x: w.frame.midX, y: w.frame.midY)) } }
+            ?? content.displays.first(where: { $0.displayID == (wanted ?? CGMainDisplayID()) })
+        guard let display = preferred ?? content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else {
             throw StreamerError.noDisplay
         }
         displayID = display.displayID
@@ -53,11 +57,20 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         // (low-latency mode refuses it with -19354), HEVC does it in ~16ms a frame.
         codec = codecs.contains(.hevc) ? .hevc : .h264
 
+        // The region captured, in the display's own points.
+        var source = CGRect(x: 0, y: 0, width: Double(display.width), height: Double(display.height))
+        var filter = SCContentFilter(display: display, excludingWindows: [])
+        if let window {
+            guard let app = content.applications.first(where: { $0.processID == window.pid }) else { throw StreamerError.noWindow(window.id) }
+            source = window.frame.intersection(display.frame).offsetBy(dx: -display.frame.minX, dy: -display.frame.minY).integral
+            guard source.width >= 2, source.height >= 2 else { throw StreamerError.noWindow(window.id) }
+            filter = SCContentFilter(display: display, including: [app], exceptingWindows: [])
+        }
+
         // SCDisplay reports points; the mode tells us the real pixel count.
         let mode = CGDisplayCopyDisplayMode(display.displayID)
-        let pixelW = Double(mode?.pixelWidth ?? display.width * 2)
-        let pixelH = Double(mode?.pixelHeight ?? display.height * 2)
-        let (w, h) = quality.streamSize(display: (pixelW, pixelH), clientMax: (maxWidth, maxHeight),
+        let scale = Double(mode?.pixelWidth ?? display.width * 2) / Double(display.width)
+        let (w, h) = quality.streamSize(display: (source.width * scale, source.height * scale), clientMax: (maxWidth, maxHeight),
                                         codecLimit: codec == .h264 ? 4096 : 8192)
 
         let config = SCStreamConfiguration()
@@ -67,6 +80,7 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.showsCursor = true
         config.queueDepth = 5
+        if window != nil { config.sourceRect = source }
         if audio {
             // What the Mac delivers, measured: 48kHz planar Float32 stereo in 960-frame chunks.
             config.capturesAudio = true
@@ -80,7 +94,7 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         encoder.onFrame = out.frame
         self.encoder = encoder
 
-        let stream = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: config, delegate: self)
+        let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         if audio { try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue) }
         try await stream.startCapture()
@@ -101,8 +115,9 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         return ScreenInfo(displayID: display.displayID, displayName: names[display.displayID] ?? "Display",
                           codec: codec, streamWidth: w, streamHeight: h,
-                          screenWidth: Double(display.width), screenHeight: Double(display.height),
-                          displays: displays)
+                          screenWidth: source.width, screenHeight: source.height,
+                          displays: displays,
+                          window: window.map { WindowInfo(id: $0.id, app: $0.app, title: $0.title, width: source.width, height: source.height) })
     }
 
     func stop() {
@@ -210,11 +225,13 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
 
 enum StreamerError: LocalizedError {
     case noDisplay
+    case noWindow(CGWindowID)
     case encoder(OSStatus)
 
     var errorDescription: String? {
         switch self {
         case .noDisplay: "No display available to capture"
+        case .noWindow(let id): "Window \(id) is no longer on screen"
         case .encoder(let s): "Could not create video encoder (\(s))"
         }
     }

@@ -23,6 +23,17 @@ final class HostSession {
     private var awake: PowerAssertion?
     private let audioOn = AtomicFlag()
     private let decoder = JSONDecoder()
+    /// Window mode, and the size the client wants the window. Nil: the whole display.
+    private var windowRequest: WindowRequest?
+    private var ring = WindowRing()
+    private var shown: MacWindow?
+    /// Where each window we resized was, to put it back when the session ends.
+    private var originals: [CGWindowID: (pid: pid_t, frame: CGRect)] = [:]
+    private var windowTimer: DispatchSourceTimer?
+    private var lastPolledFrame: CGRect?
+    private var starting = false
+    private var windowRetries = 0
+    private let dryRunWindows = UserDefaults.standard.bool(forKey: "dryRunWindows")
 
     var onStatus: ((String) -> Void)?
     var onEnd: ((HostSession, Error?) -> Void)?
@@ -35,6 +46,7 @@ final class HostSession {
         // Development flags, for UI tests that must not move the real cursor:
         //   -dryRunInput YES   track input state but post nothing
         //   -inputLog <path>   append every received InputEvent as a JSON line
+        //   -dryRunWindows YES window mode lists and switches windows but never raises or resizes them
         let d = UserDefaults.standard
         var system = InputInjector.System.live
         if d.bool(forKey: "dryRunInput") { system.post = { _ in }; system.postGesture = { _ in } }
@@ -83,7 +95,9 @@ final class HostSession {
         streamer = nil
         generation += 1
         cursorTimer?.cancel()
+        windowTimer?.cancel()
         injector.releaseAll()
+        restoreWindows()
         let clipboard = self.clipboard, observer = screenObserver
         DispatchQueue.main.async {
             clipboard?.stop()
@@ -98,9 +112,11 @@ final class HostSession {
             hello = h
             audioOn.value = h.audio == true
             quality = h.quality ?? .full
+            windowRequest = h.window
             onStatus?("Connected: \(h.clientName)")
             startStream(on: h.displayID)
             startCursorReports()
+            startWindowWatch()
             startClipboard()
             watchDisplayChanges()
         case .input:
@@ -117,6 +133,19 @@ final class HostSession {
             guard q != quality else { return }
             quality = q
             if let s = streamer { startStream(on: s.displayID) }
+        case .setWindowMode:
+            guard let m = try? decoder.decode(WindowModeChange.self, from: payload) else { return fail(.badPayload(type)) }
+            let was = windowRequest
+            windowRequest = m.window
+            guard hello != nil, m.window != was else { return }
+            if m.window == nil {
+                restoreWindows()
+                shown = nil
+            }
+            startStream(on: streamer?.displayID)
+        case .switchWindow:
+            guard let sw = try? decoder.decode(SwitchWindow.self, from: payload), windowRequest != nil else { return fail(.badPayload(type)) }
+            startStream(on: streamer?.displayID, choice: sw.windowID.map { .id($0) } ?? .step(sw.step ?? 0))
         case .audioEnabled:
             guard payload.count == 1 else { return fail(.badPayload(type)) }
             audioOn.value = payload.first == 1
@@ -139,11 +168,13 @@ final class HostSession {
 
     /// (Re)start capture of a display. Also used when the display's mode changes,
     /// since SCStream keeps delivering the old size, scaled, after a resolution switch.
-    private func startStream(on displayID: UInt32?) {
+    private func startStream(on displayID: UInt32?, choice: WindowChoice = .keep(resize: true)) {
         guard let hello else { return }
         streamer?.stop()
         generation += 1
+        starting = true
         let gen = generation
+        let request = windowRequest, ring = self.ring, current = shown?.id, touch = !dryRunWindows
         let conn = self.conn
         let streamer = ScreenStreamer(output: .init(
             canSend: { conn.canSendVideo },
@@ -157,28 +188,155 @@ final class HostSession {
         self.streamer = streamer
         Task {
             do {
-                let info = try await streamer.start(displayID: displayID, maxWidth: hello.maxWidth, maxHeight: hello.maxHeight,
+                var chosen: Picked?
+                if let request { chosen = await Self.pick(choice, current: current, ring: ring, size: request, touch: touch) }
+                var info = try await streamer.start(displayID: displayID, window: chosen?.window,
+                                                    maxWidth: hello.maxWidth, maxHeight: hello.maxHeight,
                                                     codecs: hello.codecs ?? [.h264], audio: hello.audio == true,
                                                     quality: quality)
                 queue.async {
                     guard gen == self.generation else { return streamer.stop() }
+                    self.starting = false
+                    self.windowRetries = 0
                     self.injector.displayID = streamer.displayID
+                    self.injector.region = chosen?.window?.frame
+                    self.shown = chosen?.window
+                    self.lastPolledFrame = chosen?.window?.frame
+                    if let chosen {
+                        self.ring = chosen.ring
+                        if let o = chosen.original, self.originals[o.id] == nil { self.originals[o.id] = (o.pid, o.frame) }
+                        info.windows = chosen.windows
+                    }
                     self.lastCursor = nil
                     conn.send(.screenInfo, json: info)
                     streamer.requestKeyframe()
+                }
+            } catch StreamerError.noWindow(let id) {
+                // Closed between being listed and being captured: show another.
+                queue.async {
+                    guard gen == self.generation else { return }
+                    self.windowRetries += 1
+                    NSLog("RemoteMac: window \(id) went away before capture started (attempt \(self.windowRetries))")
+                    guard self.windowRetries <= 3 else { return self.giveUp("Window \(id) kept disappearing before it could be captured.") }
+                    self.shown = nil
+                    self.startStream(on: displayID)
                 }
             } catch {
                 queue.async {
                     guard gen == self.generation else { return }
                     NSLog("RemoteMac: capture failed: \(error)")
-                    let why = CGPreflightScreenCaptureAccess()
+                    self.giveUp(CGPreflightScreenCaptureAccess()
                         ? "Screen capture failed: \(error.localizedDescription)"
-                        : "This Mac has not given Remote Mac Host Screen Recording permission. Grant it from the host's menu bar icon, then reopen the host."
-                    self.onStatus?(why)
-                    conn.send(.error, Data(why.utf8))
-                    // Let the message flush before hanging up.
-                    self.queue.asyncAfter(deadline: .now() + 0.5) { conn.cancel() }
+                        : "This Mac has not given Remote Mac Host Screen Recording permission. Grant it from the host's menu bar icon, then reopen the host.")
                 }
+            }
+        }
+    }
+
+    /// Tell the client why, which it treats as final, and hang up.
+    private func giveUp(_ why: String) {
+        onStatus?(why)
+        conn.send(.error, Data(why.utf8))
+        // Let the message flush before hanging up.
+        queue.asyncAfter(deadline: .now() + 0.5) { [conn] in conn.cancel() }
+    }
+
+    // MARK: Window mode
+
+    enum WindowChoice {
+        /// The window already shown, or the frontmost if it is gone. `resize`
+        /// false when it moved or resized on the Mac: follow it, don't fight it.
+        case keep(resize: Bool)
+        /// Along the swipe order.
+        case step(Int)
+        case id(CGWindowID)
+    }
+
+    struct Picked {
+        var window: MacWindow?
+        var ring: WindowRing
+        /// In swipe order.
+        var windows: [WindowInfo]
+        var original: (id: CGWindowID, pid: pid_t, frame: CGRect)?
+    }
+
+    /// Lists the windows, picks one, raises it and resizes it to `size`
+    /// (unless `touch` is false). AX round trips to other apps: off the session queue.
+    static func pick(_ choice: WindowChoice, current: CGWindowID?, ring: WindowRing, size: WindowRequest, touch: Bool = true) async -> Picked {
+        let list = WindowList.switchable()
+        var ring = ring
+        ring.update(list.map(\.id))
+        let byID = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let windows = ring.order.compactMap { byID[$0]?.info }
+        let still = current.flatMap { byID[$0] == nil ? nil : $0 }
+        let id: CGWindowID?
+        var resize = touch
+        switch choice {
+        case .keep(let r):
+            id = still ?? list.first?.id
+            resize = touch && (r || still == nil)
+        case .step(let n): id = ring.step(from: current, by: n)
+        case .id(let wanted): id = byID[wanted] != nil ? wanted : still ?? list.first?.id
+        }
+        guard let id, var w = byID[id] else { return Picked(window: nil, ring: ring, windows: windows) }
+
+        var original: (CGWindowID, pid_t, CGRect)?
+        if let el = AXWindow.element(pid: w.pid, id: id) {
+            if resize {
+                AXWindow.raise(el, pid: w.pid)
+                let center = CGPoint(x: w.frame.midX, y: w.frame.midY)
+                if AXWindow.resizable(el), let visible = await MainActor.run(body: { WindowList.visibleFrame(at: center) }),
+                   let before = AXWindow.frame(el) {
+                    original = (id, w.pid, before)
+                    let target = WindowFit.place(CGSize(width: size.width, height: size.height), from: before, in: visible)
+                    let got = AXWindow.setFrame(el, target, pid: w.pid)
+                    if got?.size != target.size {
+                        NSLog("RemoteMac: \(w.app) window \(id) asked for \(target.size), took \(got.map { "\($0.size)" } ?? "nothing")")
+                    }
+                    // The window server, which capture reads, applies it a moment after the app does.
+                    try? await Task.sleep(nanoseconds: 60_000_000)
+                } else {
+                    NSLog("RemoteMac: \(w.app) window \(id) can't be resized (full screen or fixed size); showing it as it is")
+                }
+            }
+        } else {
+            NSLog("RemoteMac: \(w.app) window \(id) has no Accessibility element; showing it as it is")
+        }
+        w.frame = WindowList.frame(of: id) ?? w.frame
+        let info = w.info
+        return Picked(window: w, ring: ring, windows: windows.map { $0.id == id ? info : $0 }, original: original)
+    }
+
+    /// Follows the shown window: if it closes, shows another; if it moves or
+    /// is resized on the Mac, restarts capture on its new frame once it holds still.
+    private func startWindowWatch() {
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 0.5, repeating: .milliseconds(500))
+        t.setEventHandler { [weak self] in
+            guard let self, self.windowRequest != nil, !self.starting, let s = self.streamer, let shown = self.shown else { return }
+            guard let now = WindowList.frame(of: shown.id) else {
+                NSLog("RemoteMac: \(shown.app) window \(shown.id) closed or left the desktop; showing another")
+                self.shown = nil
+                return self.startStream(on: s.displayID)
+            }
+            defer { self.lastPolledFrame = now }
+            if now != shown.frame && now == self.lastPolledFrame {
+                self.startStream(on: s.displayID, choice: .keep(resize: false))
+            }
+        }
+        t.resume()
+        windowTimer = t
+    }
+
+    /// Puts every window this session resized back where it was.
+    private func restoreWindows() {
+        let o = originals
+        originals = [:]
+        injector.region = nil
+        guard !o.isEmpty else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            for (id, v) in o {
+                if let el = AXWindow.element(pid: v.pid, id: id) { AXWindow.setFrame(el, v.frame, pid: v.pid) }
             }
         }
     }
@@ -189,7 +347,7 @@ final class HostSession {
         t.schedule(deadline: .now(), repeating: .milliseconds(16))
         t.setEventHandler { [weak self] in
             guard let self, self.streamer != nil, let p = CGEvent(source: nil)?.location else { return }
-            let b = CGDisplayBounds(self.injector.displayID)
+            let b = self.injector.region ?? CGDisplayBounds(self.injector.displayID)
             guard b.contains(p) else { return }
             let now = (Float((p.x - b.minX) / b.width), Float((p.y - b.minY) / b.height))
             if let last = self.lastCursor, last == now { return }
