@@ -7,9 +7,12 @@ import XCTest
 ///
 /// Run through `scripts/test.sh`, which starts that host and passes
 /// REMOTEMAC_HOST and REMOTEMAC_INPUT_LOG to this runner.
-final class RemoteMacUITests: XCTestCase {
-    private var app: XCUIApplication!
-    private var screen: XCUIElement!
+/// Subclassed by WindowModeUITests, which reruns every test here in window mode.
+class RemoteMacUITests: XCTestCase {
+    fileprivate var app: XCUIApplication!
+    /// Overridden by the window-mode tests.
+    var windowMode: Bool { false }
+    fileprivate var screen: XCUIElement!
     private var log: InputLog!
 
     override func setUpWithError() throws {
@@ -19,7 +22,9 @@ final class RemoteMacUITests: XCTestCase {
         log = InputLog(path: try XCTUnwrap(env["REMOTEMAC_INPUT_LOG"]))
 
         app = XCUIApplication()
-        app.launchArguments = ["-autoconnect", host, "-code", env["REMOTEMAC_CODE"] ?? "TESTCODE"]
+        // The whole display, on any device; window mode has its own test below.
+        app.launchArguments = ["-autoconnect", host, "-code", env["REMOTEMAC_CODE"] ?? "TESTCODE",
+                               "-windowMode", windowMode ? "YES" : "NO"]
         app.launch()
         screen = app.descendants(matching: .any)["remote-screen"]
         let streaming = NSPredicate(format: "value BEGINSWITH 'streaming'")
@@ -213,3 +218,20 @@ enum KeyText {
         return s
     }
 }
+
+/// Every test above again, in window mode, plus its own. Against the dry-run host, which also runs with
+/// `-dryRunWindows YES`: it streams a real Mac window but never resizes it.
+final class WindowModeUITests: RemoteMacUITests {
+    override var windowMode: Bool { true }
+
+    func testStreamsOneWindowAndTheToolbarListsThem() {
+        XCTAssertTrue((screen.value as? String ?? "").contains("window=on"), "value: \(String(describing: screen.value))")
+        app.buttons["Windows"].tap()
+        XCTAssertTrue(app.buttons["Show whole display"].waitForExistence(timeout: 3))
+        app.buttons["Show whole display"].tap()
+        let off = NSPredicate(format: "value CONTAINS 'window=off'")
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: off, evaluatedWith: screen)], timeout: 5), .completed)
+    }
+}
+
+
