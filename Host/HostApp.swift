@@ -106,7 +106,7 @@ struct HostMenu: View {
             permission("Accessibility (input)", granted: model.accessibility, action: model.requestAccessibility)
             if !model.screenRecording {
                 Text("After granting Screen Recording, quit and reopen this app.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Divider()
             Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
