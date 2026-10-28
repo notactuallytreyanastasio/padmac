@@ -62,6 +62,10 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     private var sentWindowRequest: WindowRequest?
     private var windowResize: DispatchWorkItem?
     private var shownWindow: UInt32?
+#if DUO
+    /// The hinge; nil until the first update.
+    private var hinge: UIHinge.Status?
+#endif
 
     init(session: RemoteSession) {
         self.session = session
@@ -103,6 +107,17 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         keys.onDelete = { [weak self] in self?.tapKey(51) }
         keys.accessory = makeAccessoryBar()
         view.addSubview(keys)
+
+#if DUO
+        // Called with the initial state and on every change. Folding changes the
+        // division region, which the next layout reads.
+        view.addInteraction(UIHingeInteraction { [weak self] _, update in
+            guard let self, self.hinge != update.hinge?.status else { return }
+            self.hinge = update.hinge?.status
+            self.updateAccessibilityValue()
+            self.view.setNeedsLayout()
+        })
+#endif
 
         installTouchGestures()
         installPointerGestures()
@@ -168,9 +183,13 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         return AVMakeRect(aspectRatio: CGSize(width: s.screenWidth, height: s.screenHeight), insideRect: space)
     }
 
-    /// The safe area: a window keeps clear of the camera cutout and the corners.
     private var windowSpace: CGRect {
-        view.bounds.inset(by: view.safeAreaInsets)
+#if DUO
+        let fold = view.reservedRegions(kind: .division).first(where: \.isActive)?.frame
+#else
+        let fold: CGRect? = nil
+#endif
+        return WindowSizing.space(safe: view.bounds.inset(by: view.safeAreaInsets), division: fold)
     }
 
     // MARK: Window mode
@@ -514,8 +533,19 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
     private func updateAccessibilityValue() {
         guard session.screen != nil else { return }
-        video.accessibilityValue = String(format: "streaming zoom=%.2f mode=%@ window=%@",
-                                          viewport.zoom, mode == .trackpad ? "trackpad" : "direct", windowMode ? "on" : "off")
+#if DUO
+        let fold: String = switch hinge {
+        case nil: "none"
+        case .closed: "closed"
+        case .partiallyOpen: "partiallyOpen"
+        case .fullyOpen: "fullyOpen"
+        default: "unknown"
+        }
+#else
+        let fold = "none"
+#endif
+        video.accessibilityValue = String(format: "streaming zoom=%.2f mode=%@ window=%@ hinge=%@",
+                                          viewport.zoom, mode == .trackpad ? "trackpad" : "direct", windowMode ? "on" : "off", fold)
     }
 
     /// While zoomed, keep the Mac cursor inside the middle of the iPad screen.

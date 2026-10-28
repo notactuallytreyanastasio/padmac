@@ -47,4 +47,22 @@ final class WindowSizingTests: XCTestCase {
         XCTAssertEqual(SwipeTracker.windowStep(distance: -0.1, velocity: 0.5), 0, "a short slow drag goes nowhere")
         XCTAssertEqual(SwipeTracker.windowStep(distance: 0.02, velocity: 3), 0, "a twitch is not a swipe")
     }
+
+    func testAFoldAcrossTheScreenGivesTheWindowTheTopHalf() {
+        let safe = CGRect(x: 0, y: 30, width: 880, height: 600)
+        let fold = CGRect(x: 0, y: 320, width: 880, height: 24)
+        XCTAssertEqual(WindowSizing.space(safe: safe, division: fold), CGRect(x: 0, y: 30, width: 880, height: 290))
+    }
+
+    func testAnUprightFoldGivesTheWindowTheLeadingHalf() {
+        let safe = CGRect(x: 0, y: 0, width: 620, height: 860)
+        let fold = CGRect(x: 298, y: 0, width: 24, height: 860)
+        XCTAssertEqual(WindowSizing.space(safe: safe, division: fold), CGRect(x: 0, y: 0, width: 298, height: 860))
+    }
+
+    func testNoFoldIsTheWholeSafeArea() {
+        let safe = CGRect(x: 0, y: 30, width: 880, height: 600)
+        XCTAssertEqual(WindowSizing.space(safe: safe, division: nil), safe)
+        XCTAssertEqual(WindowSizing.space(safe: safe, division: CGRect(x: 0, y: 900, width: 880, height: 20)), safe, "a fold outside the app's space")
+    }
 }

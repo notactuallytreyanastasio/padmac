@@ -10,7 +10,8 @@
 #                            (don't touch the mouse meanwhile)
 #
 # Needs Screen Recording permission for your terminal (the host it starts
-# captures the screen). The iPad tests use REMOTEMAC_SIM, default "iPad Pro 13-inch (M5)".
+# captures the screen). The iPad tests use REMOTEMAC_SIM, default "iPad Pro 13-inch (M5)";
+# the Duo app's run on a simulator named "iPhone Duo" (iOS 27.1).
 set -uo pipefail
 cd "${0:A:h}/.."
 
@@ -72,6 +73,10 @@ if $DD/Build/Products/Debug/probe 127.0.0.1:$PORT $CODE $DD/probe.png --displays
 step "iPad unit and UI tests on $SIM"
 TEST_RUNNER_REMOTEMAC_HOST=127.0.0.1:$PORT TEST_RUNNER_REMOTEMAC_INPUT_LOG=$LOG TEST_RUNNER_REMOTEMAC_CODE=$CODE \
   xcb ipad-tests test -scheme RemoteMac -destination "platform=iOS Simulator,name=$SIM" -parallel-testing-enabled NO
+
+step "iPhone Duo app UI tests on the iPhone Duo simulator"
+TEST_RUNNER_REMOTEMAC_HOST=127.0.0.1:$PORT TEST_RUNNER_REMOTEMAC_INPUT_LOG=$LOG TEST_RUNNER_REMOTEMAC_CODE=$CODE \
+  xcb duo-tests test -scheme RemoteMacDuo -destination "platform=iOS Simulator,name=iPhone Duo" -parallel-testing-enabled NO
 
 if [[ $LIVE == --live ]]; then
   step "Live probe: real cursor and clipboard"
