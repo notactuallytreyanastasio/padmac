@@ -32,6 +32,9 @@ final class InputInjector {
     }
 
     var displayID: CGDirectDisplayID
+    /// Window mode: the streamed window's frame. Absolute positions are across
+    /// it and the cursor is kept inside it, since the client sees nothing else.
+    var region: CGRect?
     private let system: System
     private let source = CGEventSource(stateID: .hidSystemState)
     private var buttons = Set<MouseButton>()
@@ -47,7 +50,7 @@ final class InputInjector {
         self.system = system
     }
 
-    private var bounds: CGRect { system.bounds(displayID) }
+    private var bounds: CGRect { region ?? system.bounds(displayID) }
 
     private var posted: (at: CGPoint, time: TimeInterval)?
 

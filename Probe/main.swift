@@ -9,13 +9,13 @@ import UniformTypeIdentifiers
 import VideoToolbox
 
 // End-to-end check of a running host, from the client's side of the wire:
-//   probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys] [--quality]
+//   probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys] [--quality] [--window]
 // Connects over TLS-PSK, decodes video with VideoToolbox, writes a sharp frame
 // as PNG, and prints PASS/FAIL for each optional check. Run it on the host Mac:
 // the checks read the real cursor and pasteboard back.
 
 let args = CommandLine.arguments
-guard args.count >= 3 else { print("usage: probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys] [--quality]"); exit(2) }
+guard args.count >= 3 else { print("usage: probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys] [--quality] [--window]"); exit(2) }
 let hostPort = args[1].split(separator: ":")
 let host = String(hostPort[0]), port = hostPort.count > 1 ? UInt16(hostPort[1])! : Wire.port
 let code = args[2]
@@ -155,6 +155,54 @@ func runKeyChecks() {
     }
 }
 
+/// Window mode against real windows: the host must resize the frontmost one to
+/// what was asked, stream exactly it, put the cursor inside it, switch along the
+/// swipe order and back, and put every window back where it was on disconnect.
+let windowAsk = WindowRequest(width: 700, height: 500)
+let framesBefore = Dictionary(WindowList.switchable().map { ($0.id, $0.frame) }, uniquingKeysWith: { a, _ in a })
+var hangingUp = false
+
+func near(_ a: CGSize, _ b: CGSize) -> Bool { abs(a.width - b.width) < 2 && abs(a.height - b.height) < 2 }
+
+func runWindowChecks(_ info: ScreenInfo) {
+    guard let w = info.window else { return check(false, "window mode: host streamed no window (windows: \(info.windows?.count ?? 0))") }
+    let real = WindowList.frame(of: w.id)
+    print("window \(w.app) \"\(w.title)\" \(w.id): asked \(windowAsk.width)x\(windowAsk.height), now \(real.map { "\($0.size)" } ?? "gone")")
+    check(real.map { near($0.size, CGSize(width: windowAsk.width, height: windowAsk.height)) } ?? false,
+          "window resized to the size asked for")
+    check(real.map { near($0.size, CGSize(width: info.screenWidth, height: info.screenHeight)) } ?? false,
+          "screenInfo is the window's size: \(info.screenWidth)x\(info.screenHeight)")
+    check(abs(Double(info.streamWidth) / Double(info.streamHeight) - info.screenWidth / info.screenHeight) < 0.01,
+          "stream \(info.streamWidth)x\(info.streamHeight) has the window's shape")
+    conn.send(.input, json: InputEvent.moveTo(x: 0.5, y: 0.5))
+    after(0.4) {
+        let at = CGEvent(source: nil)!.location
+        check(real.map { abs(at.x - $0.midX) < 2 && abs(at.y - $0.midY) < 2 } ?? false, "moveTo(0.5, 0.5) is the window's centre: cursor at \(at)")
+        guard (info.windows?.count ?? 0) > 1 else { return check(false, "window switching needs 2 windows on this desktop, has \(info.windows?.count ?? 0)") }
+        conn.send(.switchWindow, json: SwitchWindow(step: 1))
+    }
+}
+
+func windowSwitched(_ info: ScreenInfo) {
+    let first = infos[0], order = first.windows ?? []
+    guard let i = order.firstIndex(where: { $0.id == first.window?.id }) else { return check(false, "first window not in the swipe order") }
+    if infos.count == 2 {
+        let want = order[(i + 1) % order.count]
+        check(info.window?.id == want.id, "swipe +1 shows \(want.app) \(want.id): showing \(info.window.map { "\($0.app) \($0.id)" } ?? "nothing")")
+        after(0.8) { conn.send(.switchWindow, json: SwitchWindow(step: -1)) }
+    } else if infos.count == 3 {
+        check(info.window?.id == first.window?.id, "swipe -1 returns to \(first.window?.app ?? "?")")
+        after(0.8) {
+            hangingUp = true
+            conn.cancel()
+            after(1.0) {
+                let moved = framesBefore.filter { id, f in WindowList.frame(of: id).map { $0 != f } ?? false }
+                check(moved.isEmpty, "every window back where it was after disconnect (\(moved.count) not)")
+            }
+        }
+    }
+}
+
 let savedClipboard: [[NSPasteboard.PasteboardType: Data]] = (NSPasteboard.general.pasteboardItems ?? []).map { item in
     Dictionary(uniqueKeysWithValues: item.types.compactMap { t in item.data(forType: t).map { (t, $0) } })
 }
@@ -234,10 +282,12 @@ conn.onReady = {
     conn.send(.hello, json: Hello(clientName: "probe", maxWidth: 8192, maxHeight: 8192,
                                   codecs: flags.contains("--h264") ? [.h264] : [.hevc, .h264],
                                   audio: flags.contains("--audio"),
-                                  quality: flags.contains("--quality") ? .saver : nil))
+                                  quality: flags.contains("--quality") ? .saver : nil,
+                                  window: flags.contains("--window") ? windowAsk : nil))
 }
 conn.onClose = { error in
     print("closed: \(error.map { "\($0)" } ?? "clean")")
+    if hangingUp { return }
     restoreClipboard()
     exit(1)
 }
@@ -253,6 +303,7 @@ conn.onMessage = { type, payload in
             if flags.contains("--clipboard") { after(2.5, runClipboardChecks) }
             if flags.contains("--swipe") { after(0.5) { runSwipeChecks(info) } }
             if flags.contains("--keys") { after(0.5, runKeyChecks) }
+            if flags.contains("--window") { after(0.8) { runWindowChecks(info) } }
             if flags.contains("--quality") {
                 check(info.streamWidth <= 1920, "data saver streams at most 1920 wide: \(info.streamWidth)x\(info.streamHeight)")
                 let startBytes = bytes
@@ -280,6 +331,8 @@ conn.onMessage = { type, payload in
                     conn.send(.selectDisplay, json: SelectDisplay(displayID: target.id))
                 }
             }
+        } else if flags.contains("--window") {
+            windowSwitched(info)
         } else if flags.contains("--quality") && infos.count == 2 {
             check(info.streamWidth > 1920 || info.screenWidth * 2 <= 1920, "switching to full restarts at \(info.streamWidth)x\(info.streamHeight)")
         } else if flags.contains("--displays") {
@@ -351,7 +404,7 @@ conn.onMessage = { type, payload in
 }
 conn.start()
 
-let duration = flags.contains("--clipboard") || flags.contains("--quality") ? 8.5 : flags.contains("--keys") ? 8.5 : flags.contains("--swipe") || flags.contains("--audio") ? 6.5 : 4.5
+let duration = flags.contains("--window") ? 6.5 : flags.contains("--clipboard") || flags.contains("--quality") ? 8.5 : flags.contains("--keys") ? 8.5 : flags.contains("--swipe") || flags.contains("--audio") ? 6.5 : 4.5
 DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
     let secs = Date().timeIntervalSince(start)
     print(String(format: "%d frames (%d key), %d decoded, %.1f KB avg, %.2f Mbit/s over %.1fs, %d cursor reports",

@@ -41,6 +41,10 @@ enum MessageType: UInt8 {
     case audioEnabled = 0x14
     /// JSON `StreamQuality` (a bare string). The host restarts the stream at that quality.
     case setQuality = 0x15
+    /// JSON `WindowModeChange`: stream one window at this size, or (nil) the whole display.
+    case setWindowMode = 0x16
+    /// JSON `SwitchWindow`. Window mode only.
+    case switchWindow = 0x17
 }
 
 enum VideoCodec: String, Codable {
@@ -66,6 +70,40 @@ struct ScreenInfo: Codable, Equatable {
     var screenHeight: Double
     /// Every display the client can switch to.
     var displays: [DisplayInfo]
+    /// Window mode: the window being streamed. Then screenWidth/screenHeight are
+    /// its size, and normalised input and cursor positions are across it.
+    /// Nil in window mode means the Mac had no window to show, so this is the display.
+    var window: WindowInfo? = nil
+    /// Window mode: the windows a swipe moves between, in swipe order.
+    var windows: [WindowInfo]? = nil
+}
+
+struct WindowInfo: Codable, Equatable, Identifiable {
+    /// The CGWindowID.
+    var id: UInt32
+    var app: String
+    var title: String
+    /// Size in Mac points.
+    var width: Double
+    var height: Double
+}
+
+/// The size, in Mac points, the client wants the streamed window to be. The
+/// host fits it on the Mac's screen keeping this aspect ratio, so the window
+/// it reports back may be smaller.
+struct WindowRequest: Codable, Equatable {
+    var width: Double
+    var height: Double
+}
+
+struct WindowModeChange: Codable {
+    var window: WindowRequest?
+}
+
+/// Move to the window `step` places along the swipe order, or to `windowID`.
+struct SwitchWindow: Codable, Equatable {
+    var step: Int?
+    var windowID: UInt32?
 }
 
 struct Hello: Codable {
@@ -81,6 +119,8 @@ struct Hello: Codable {
     var audio: Bool?
     /// Absent means full.
     var quality: StreamQuality?
+    /// Present: window mode, starting with the frontmost window at this size.
+    var window: WindowRequest? = nil
 }
 
 struct SelectDisplay: Codable {

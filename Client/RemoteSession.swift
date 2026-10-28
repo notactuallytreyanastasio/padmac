@@ -196,7 +196,7 @@ final class RemoteSession: ObservableObject {
             player.enqueue(samples)
         case .error:
             hostError = String(decoding: payload, as: UTF8.self)
-        case .hello, .input, .requestKeyframe, .selectDisplay, .audioEnabled, .setQuality:
+        case .hello, .input, .requestKeyframe, .selectDisplay, .audioEnabled, .setQuality, .setWindowMode, .switchWindow:
             fail(type)
         }
     }

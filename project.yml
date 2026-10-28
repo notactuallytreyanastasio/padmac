@@ -64,7 +64,7 @@ targets:
     scheme: {}
     type: tool
     platform: macOS
-    sources: [Probe, Shared, Host/DockSwipe.swift, Client/KeyRemapper.swift]
+    sources: [Probe, Shared, Host/DockSwipe.swift, Host/WindowControl.swift, Client/KeyRemapper.swift]
     settings:
       base:
         CODE_SIGN_IDENTITY: "-"
