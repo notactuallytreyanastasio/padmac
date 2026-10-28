@@ -2,9 +2,21 @@ import AVFoundation
 import UIKit
 
 /// Displays the H.264 stream with the hardware decoder behind AVSampleBufferDisplayLayer.
+///
+/// The picture is drawn in `contentRect`, the same rect input is mapped
+/// through, not aspect-fit to the whole view: in window mode the picture keeps
+/// to the safe area, and drawing it anywhere else put taps off by the inset.
 final class VideoView: UIView, VideoSink {
-    override class var layerClass: AnyClass { AVSampleBufferDisplayLayer.self }
-    private var displayLayer: AVSampleBufferDisplayLayer { layer as! AVSampleBufferDisplayLayer }
+    private let displayLayer = AVSampleBufferDisplayLayer()
+
+    var contentRect: CGRect = .zero {
+        didSet {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            displayLayer.frame = contentRect
+            CATransaction.commit()
+        }
+    }
 
     /// Asked for a keyframe when decoding cannot continue from here.
     var needKeyframe: (() -> Void)?
@@ -16,6 +28,7 @@ final class VideoView: UIView, VideoSink {
     override init(frame: CGRect) {
         super.init(frame: frame)
         displayLayer.videoGravity = .resizeAspect
+        layer.addSublayer(displayLayer)
         backgroundColor = .black
         // The layer stops rendering after the app is backgrounded.
         NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: nil) { [weak self] _ in

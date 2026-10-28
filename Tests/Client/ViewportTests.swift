@@ -107,4 +107,18 @@ final class ViewportTests: XCTestCase {
         XCTAssertEqual(v.fromScreen(v.toScreen(p)).x, p.x, accuracy: 1e-9)
         XCTAssertEqual(v.fromScreen(v.toScreen(p)).y, p.y, accuracy: 1e-9)
     }
+
+    func testWindowModeCentresInTheSafeAreaNotTheWholeView() {
+        // A camera cutout on the left only: the safe area is off-centre in the view.
+        let area = CGRect(x: 59, y: 17, width: 407, height: 644)
+        var v = Viewport(viewSize: CGSize(width: 466, height: 678), content: CGRect(x: 59, y: 207, width: 407, height: 264))
+        v.area = area
+        v.set(zoom: 1, offset: .zero)
+        XCTAssertEqual(v.toScreen(CGPoint(x: 59, y: 207)), CGPoint(x: 59, y: 207), "drawn exactly where input is mapped")
+        // Centred in the whole view instead, it lands 29.5pt left, under the camera: the bug this fixes.
+        var whole = v
+        whole.area = nil
+        whole.set(zoom: 1, offset: .zero)
+        XCTAssertEqual(whole.toScreen(CGPoint(x: 59, y: 207)).x, 29.5, accuracy: 0.001)
+    }
 }

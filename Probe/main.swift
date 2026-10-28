@@ -161,6 +161,8 @@ func runKeyChecks() {
 let windowAsk = WindowRequest(width: 700, height: 500)
 let framesBefore = Dictionary(WindowList.switchable().map { ($0.id, $0.frame) }, uniquingKeysWith: { a, _ in a })
 var hangingUp = false
+/// How many screenInfos had arrived when --quality asked for Full.
+var qualitySwitchAt: Int?
 
 func near(_ a: CGSize, _ b: CGSize) -> Bool { abs(a.width - b.width) < 2 && abs(a.height - b.height) < 2 }
 
@@ -311,6 +313,7 @@ conn.onMessage = { type, payload in
                     // Measured over 3s; the refine passes and a keyframe ride on top of the average.
                     let mbps = Double(bytes - startBytes) * 8 / 3 / 1e6
                     check(mbps < StreamQuality.saver.maxBitrate.mbps * 1.5, String(format: "data saver carried %.2f Mbit/s (ceiling %.1f)", mbps, StreamQuality.saver.maxBitrate.mbps))
+                    qualitySwitchAt = infos.count
                     conn.send(.setQuality, json: StreamQuality.full)
                 }
             }
@@ -333,7 +336,8 @@ conn.onMessage = { type, payload in
             }
         } else if flags.contains("--window") {
             windowSwitched(info)
-        } else if flags.contains("--quality") && infos.count == 2 {
+        } else if let q = qualitySwitchAt, infos.count == q + 1 {
+            // The restart this request caused, not the --displays one that may come first.
             check(info.streamWidth > 1920 || info.screenWidth * 2 <= 1920, "switching to full restarts at \(info.streamWidth)x\(info.streamHeight)")
         } else if flags.contains("--displays") {
             let expectSwitch = infos[0].displays.count > 1
