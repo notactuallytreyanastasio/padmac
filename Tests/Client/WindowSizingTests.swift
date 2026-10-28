@@ -65,4 +65,13 @@ final class WindowSizingTests: XCTestCase {
         XCTAssertEqual(WindowSizing.space(safe: safe, division: nil), safe)
         XCTAssertEqual(WindowSizing.space(safe: safe, division: CGRect(x: 0, y: 900, width: 880, height: 20)), safe, "a fold outside the app's space")
     }
+
+    func testTheKeyboardPushesTheWindowUpFromTheBottom() {
+        let safe = CGRect(x: 0, y: 59, width: 620, height: 800)
+        XCTAssertEqual(WindowSizing.space(safe: safe, division: nil, bottom: 540), CGRect(x: 0, y: 59, width: 620, height: 481))
+        XCTAssertEqual(WindowSizing.space(safe: safe, division: nil, bottom: 900), safe, "a keyboard below the safe area changes nothing")
+        // Above the keyboard is a wide, short space: the Mac window becomes wide and short too.
+        let r = WindowSizing.request(for: WindowSizing.space(safe: safe, division: nil, bottom: 540).size)!
+        XCTAssertGreaterThan(r.width, r.height)
+    }
 }

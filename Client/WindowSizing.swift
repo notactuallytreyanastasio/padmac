@@ -32,7 +32,12 @@ extension WindowSizing {
     /// iPhone Duo partly open, the fold is an active division region: the window
     /// then takes the side above it (or before it, for an upright fold) and the
     /// other side is left as the trackpad, like a laptop's lid and deck.
-    static func space(safe: CGRect, division: CGRect?) -> CGRect {
+    /// Only what is above `bottom`: the top of the toolbar, which sits above the
+    /// on-screen keyboard when that is up. The bottom of a Mac window is where
+    /// its text fields are; under the keyboard or the toolbar you can't see them.
+    static func space(safe: CGRect, division: CGRect?, bottom: CGFloat? = nil) -> CGRect {
+        var safe = safe
+        if let b = bottom, b < safe.maxY { safe.size.height = max(0, b - safe.minY) }
         guard let d = division, safe.intersects(d) else { return safe }
         if d.width >= d.height {
             return CGRect(x: safe.minX, y: safe.minY, width: safe.width, height: max(0, d.minY - safe.minY))

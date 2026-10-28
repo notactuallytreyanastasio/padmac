@@ -23,8 +23,13 @@ class RemoteMacUITests: XCTestCase {
 
         app = XCUIApplication()
         // The whole display, on any device; window mode has its own test below.
+        // Trackpad mode to start, on any device: the direct-mode tests switch to it.
         app.launchArguments = ["-autoconnect", host, "-code", env["REMOTEMAC_CODE"] ?? "TESTCODE",
-                               "-windowMode", windowMode ? "YES" : "NO"]
+                               "-windowMode", windowMode ? "YES" : "NO", "-touchMode", "trackpad",
+                               // XCUITest takes over a second between two gestures; a hand takes a fraction.
+                               "-tapDragWindow", "3",
+                               // The terminal running the tests is a focused text area on the Mac.
+                               "-autoKeyboard", "NO"]
         app.launch()
         screen = app.descendants(matching: .any)["remote-screen"]
         let streaming = NSPredicate(format: "value BEGINSWITH 'streaming'")
@@ -139,7 +144,64 @@ class RemoteMacUITests: XCTestCase {
         XCTAssertEqual(buttons(e), ["left↓", "left↑"])
     }
 
+    func testDirectModeSlideMovesTheCursorUnderTheFingerWithoutClicking() {
+        app.buttons["Touch mode"].tap()
+        let c = content
+        // Quick press then slide: a move, not a hold.
+        at(c.minX + 0.2 * c.width, c.minY + 0.5 * c.height)
+            .press(forDuration: 0.05, thenDragTo: at(c.minX + 0.7 * c.width, c.minY + 0.4 * c.height))
+        let e = log.waitFor(settle: 0.5) { _ in false }
+        let moves = e.compactMap { if case .moveTo(let x, let y) = $0 { (x, y) } else { nil } }
+        XCTAssertGreaterThan(moves.count, 3, "the cursor follows the finger: \(e)")
+        XCTAssertEqual(moves.first?.0 ?? 0, 0.2, accuracy: 0.03, "touching puts it under the finger first")
+        XCTAssertEqual(moves.last?.0 ?? 0, 0.7, accuracy: 0.03)
+        XCTAssertEqual(moves.last?.1 ?? 0, 0.4, accuracy: 0.03)
+        XCTAssertEqual(buttons(e), [], "sliding must not press the button")
+    }
+
+    func testMovingTheCursorPutsTheKeyboardAway() {
+        app.buttons["Keyboard"].tap()
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        let c = content
+        at(c.minX + 0.3 * c.width, c.minY + 0.3 * c.height)
+            .press(forDuration: 0.05, thenDragTo: at(c.minX + 0.6 * c.width, c.minY + 0.5 * c.height))
+        let gone = NSPredicate(format: "exists == false")
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: gone, evaluatedWith: keyboard)], timeout: 3), .completed,
+                       "the keyboard stayed up after the cursor moved")
+    }
+
+    func testDirectModeTapThenSlideDrags() {
+        app.buttons["Touch mode"].tap()
+        let c = content
+        let start = at(c.minX + 0.3 * c.width, c.minY + 0.5 * c.height)
+        start.tap()
+        start.press(forDuration: 0.05, thenDragTo: at(c.minX + 0.6 * c.width, c.minY + 0.5 * c.height))
+        let e = log.waitFor { self.buttons($0).count >= 4 }
+        XCTAssertEqual(buttons(e), ["left↓", "left↑", "left↓", "left↑"], "the tap's click, then a drag with the button held")
+        guard let lastDown = e.lastIndex(where: { $0 == .button(.left, down: true) }) else { return XCTFail("\(e)") }
+        let movesWhileDown = e[lastDown...].filter { if case .moveTo = $0 { true } else { false } }
+        XCTAssertGreaterThan(movesWhileDown.count, 2, "the cursor moves while the button is down: \(e)")
+    }
+
+    func testDirectModeHoldThenSlideDrags() {
+        app.buttons["Touch mode"].tap()
+        let c = content
+        at(c.minX + 0.3 * c.width, c.minY + 0.5 * c.height)
+            .press(forDuration: 0.6, thenDragTo: at(c.minX + 0.6 * c.width, c.minY + 0.5 * c.height))
+        let e = log.waitFor { self.buttons($0).count >= 2 }
+        XCTAssertEqual(buttons(e), ["left↓", "left↑"])
+        guard let down = e.firstIndex(where: { $0 == .button(.left, down: true) }),
+              case .moveTo(let x, _)? = e[..<down].last(where: { if case .moveTo = $0 { true } else { false } }) else {
+            return XCTFail("no move before the press: \(e)")
+        }
+        XCTAssertEqual(x, 0.3, accuracy: 0.03, "pressed where the finger is")
+        let afterUp = e.last(where: { if case .moveTo = $0 { true } else { false } })
+        if case .moveTo(let x, _)? = afterUp { XCTAssertEqual(x, 0.6, accuracy: 0.03, "released where the finger lifted") }
+    }
+
     // MARK: Keyboard
+
 
     /// Taps the on-screen keyboard's own keys. XCUITest's typeText won't type
     /// into a plain UIKeyInput view (it wants a text field with "keyboard focus").
@@ -156,14 +218,14 @@ class RemoteMacUITests: XCTestCase {
         }
     }
 
-    func testOnScreenKeyboardTypesText() {
+    func testOnScreenKeyboardTypesText() throws {
         app.buttons["Keyboard"].tap()
         tapKeys("hi there")
         let e = log.waitFor(settle: 0.5) { KeyText.typed($0).count >= 8 }
         XCTAssertEqual(KeyText.typed(e), "hi there")
     }
 
-    func testStickyCommandTurnsTheNextLetterIntoAShortcut() {
+    func testStickyCommandTurnsTheNextLetterIntoAShortcut() throws {
         app.buttons["Keyboard"].tap()
         tapKeys("")
         app.buttons["⌘"].tap()
@@ -233,6 +295,18 @@ enum KeyText {
 /// `-dryRunWindows YES`: it streams a real Mac window but never resizes it.
 final class WindowModeUITests: RemoteMacUITests {
     override var windowMode: Bool { true }
+
+    func testTheKeyboardPushesTheWindowAboveIt() {
+        let before = content
+        app.buttons["Keyboard"].tap()
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 1) // the keyboard's animation, then the resize
+        let kbTop = (keyboard.frame.minY - screen.frame.minY) / screen.frame.height
+        let after = content
+        XCTAssertLessThanOrEqual(after.maxY, kbTop + 0.001, "picture \(after) runs under the keyboard (top at \(kbTop))")
+        XCTAssertLessThan(after.height, before.height)
+    }
 
     func testStreamsOneWindowAndTheToolbarListsThem() {
         XCTAssertTrue((screen.value as? String ?? "").contains("window=on"), "value: \(String(describing: screen.value))")

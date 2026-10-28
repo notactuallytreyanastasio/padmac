@@ -178,6 +178,22 @@ enum AXWindow {
         AXUIElementSetAttributeValue(w, kAXMainAttribute as CFString, kCFBooleanTrue)
     }
 
+    /// Whether the frontmost app's keyboard focus is in something you type into.
+    /// Roles cover native fields and web inputs; terminals report AXTextArea
+    /// (iTerm2's does, measured). Anything else with a settable value and a text
+    /// selection counts too, for custom text views.
+    static func focusIsText(pid: pid_t) -> Bool {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, timeout)
+        guard let f = copy(app, kAXFocusedUIElementAttribute) else { return false }
+        let e = f as! AXUIElement
+        let role = copy(e, kAXRoleAttribute) as? String
+        if let role, [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, "AXSearchField"].contains(role) { return true }
+        var settable: DarwinBoolean = false
+        AXUIElementIsAttributeSettable(e, kAXValueAttribute as CFString, &settable)
+        return settable.boolValue && copy(e, kAXSelectedTextRangeAttribute) != nil
+    }
+
     private static func copy(_ e: AXUIElement, _ attr: String) -> CFTypeRef? {
         var v: CFTypeRef?
         return AXUIElementCopyAttributeValue(e, attr as CFString, &v) == .success ? v : nil

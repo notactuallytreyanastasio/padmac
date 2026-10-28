@@ -161,6 +161,7 @@ func runKeyChecks() {
 let windowAsk = WindowRequest(width: 700, height: 500)
 let framesBefore = Dictionary(WindowList.switchable().map { ($0.id, $0.frame) }, uniquingKeysWith: { a, _ in a })
 var hangingUp = false
+var textFocusReports: [Bool] = []
 /// How many screenInfos had arrived when --quality asked for Full.
 var qualitySwitchAt: Int?
 
@@ -201,6 +202,28 @@ func windowSwitched(_ info: ScreenInfo) {
                 let moved = framesBefore.filter { id, f in WindowList.frame(of: id).map { $0 != f } ?? false }
                 check(moved.isEmpty, "every window back where it was after disconnect (\(moved.count) not)")
             }
+        }
+    }
+}
+
+/// The on-screen keyboard opening and closing: each changes the window size the
+/// phone asks for, and each restarts the stream. Video must survive a quick series.
+let resizeHeights: [Double] = [300, 500, 300, 500, 300]
+func runResizeChecks(_ info: ScreenInfo) {
+    guard info.window != nil else { return check(false, "window-resize: host streamed no window") }
+    for (i, h) in resizeHeights.enumerated() {
+        after(Double(i) * 0.35) { conn.send(.setWindowMode, json: WindowModeChange(window: WindowRequest(width: 700, height: h))) }
+    }
+    let end = Double(resizeHeights.count) * 0.35
+    after(end + 1.5) {
+        let last = infos.last!
+        check(abs(last.screenHeight - resizeHeights.last!) < 2 && abs(last.screenWidth - 700) < 2,
+              "after \(resizeHeights.count) resizes the window is 700x\(Int(resizeHeights.last!)): \(last.screenWidth)x\(last.screenHeight) (\(infos.count) screenInfos)")
+        let before = decoded
+        after(1.0) {
+            check(decoded > before, "video still decoding after the resizes: \(decoded - before) frames in 1s")
+            hangingUp = true
+            conn.cancel()
         }
     }
 }
@@ -285,7 +308,7 @@ conn.onReady = {
                                   codecs: flags.contains("--h264") ? [.h264] : [.hevc, .h264],
                                   audio: flags.contains("--audio"),
                                   quality: flags.contains("--quality") ? .saver : nil,
-                                  window: flags.contains("--window") ? windowAsk : nil))
+                                  window: flags.contains("--window") || flags.contains("--window-resize") ? windowAsk : nil))
 }
 conn.onClose = { error in
     print("closed: \(error.map { "\($0)" } ?? "clean")")
@@ -306,6 +329,7 @@ conn.onMessage = { type, payload in
             if flags.contains("--swipe") { after(0.5) { runSwipeChecks(info) } }
             if flags.contains("--keys") { after(0.5, runKeyChecks) }
             if flags.contains("--window") { after(0.8) { runWindowChecks(info) } }
+            if flags.contains("--window-resize") { after(0.8) { runResizeChecks(info) } }
             if flags.contains("--quality") {
                 check(info.streamWidth <= 1920, "data saver streams at most 1920 wide: \(info.streamWidth)x\(info.streamHeight)")
                 let startBytes = bytes
@@ -396,6 +420,8 @@ conn.onMessage = { type, payload in
         audioPeak = max(audioPeak, samples.map { $0 == .min ? .max : abs($0) }.max() ?? 0)
         let arrived = UInt64(CMClockGetTime(CMClockGetHostTimeClock()).seconds * 1e9)
         if t > 0, arrived > t { audioLatency.append(Double(arrived - t) / 1e6) }
+    case .textFocus:
+        textFocusReports.append(payload.first == 1)
     case .clipboardImage:
         imagesReceived.append(payload)
     case .clipboard:
@@ -408,7 +434,12 @@ conn.onMessage = { type, payload in
 }
 conn.start()
 
-let duration = flags.contains("--window") ? 6.5 : flags.contains("--clipboard") || flags.contains("--quality") ? 8.5 : flags.contains("--keys") ? 8.5 : flags.contains("--swipe") || flags.contains("--audio") ? 6.5 : 4.5
+if flags.contains("--focus") {
+    // Run with a text view focused in the frontmost app (the scratch ProbeTarget, or any editor).
+    after(1.5) { check(textFocusReports.last == true, "host reports keyboard focus in a text input: \(textFocusReports)") }
+}
+
+let duration = flags.contains("--window-resize") ? 6.0 : flags.contains("--window") ? 6.5 : flags.contains("--clipboard") || flags.contains("--quality") ? 8.5 : flags.contains("--keys") ? 8.5 : flags.contains("--swipe") || flags.contains("--audio") ? 6.5 : 4.5
 DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
     let secs = Date().timeIntervalSince(start)
     print(String(format: "%d frames (%d key), %d decoded, %.1f KB avg, %.2f Mbit/s over %.1fs, %d cursor reports",

@@ -4,9 +4,11 @@ import UniformTypeIdentifiers
 
 /// The remote screen and every way of driving it.
 ///
-/// Touch is a trackpad by default: one finger moves the Mac cursor relatively,
-/// tap clicks, two-finger tap right-clicks, two fingers scroll, and
-/// touch-hold-then-drag drags. "Direct" mode instead clicks where you touch.
+/// Touch is a trackpad by default on iPad: one finger moves the Mac cursor
+/// relatively, tap clicks, two-finger tap right-clicks, two fingers scroll, and
+/// touch-hold-then-drag drags. "Direct" mode, the default on iPhone Duo, puts
+/// the cursor under your finger: touching moves it there, sliding moves it
+/// along with no button held, tap clicks there, touch-hold-then-slide drags.
 /// An iPad trackpad or mouse maps absolutely: hovering puts the Mac cursor
 /// under it, and the iPad's own pointer is hidden.
 ///
@@ -31,7 +33,19 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     private let video = VideoView()
     private let keys = KeyboardInputView()
     private let toolbar = UIStackView()
-    private var mode = TouchMode.trackpad
+    /// `-touchMode trackpad|direct` overrides the default, for UI tests.
+    private var mode: TouchMode = switch UserDefaults.standard.string(forKey: "touchMode") {
+    case "trackpad": .trackpad
+    case "direct": .direct
+    default: RemoteViewController.defaultTouchMode
+    }
+#if DUO
+    private static let defaultTouchMode = TouchMode.direct
+#else
+    private static let defaultTouchMode = TouchMode.trackpad
+#endif
+    /// Direct mode: a finger is on the screen, so the view must hold still under it.
+    private var touching = false
     private var modeButton: UIButton!
     private var stickyButtons: [UInt16: UIButton] = [:]
     private var sticky = Set<UInt16>()
@@ -91,6 +105,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         view.addSubview(video)
         session.video = video
         session.onCursor = { [weak self] x, y in self?.follow(x, y) }
+        session.onTextFocus = { [weak self] on in self?.macTextFocus(on) }
         session.onScreen = { [weak self] info in
             guard let self else { return }
             self.announceWindow(info)
@@ -182,7 +197,8 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
     /// Where the Mac screen is drawn inside the view (aspect-fit). A window
     /// stays out of the camera cutout and corners; the whole display uses
-    /// every point, since it rarely has the screen's shape anyway.
+    /// every point, since it rarely has the screen's shape anyway. Both keep
+    /// above the on-screen keyboard.
     private var videoRect: CGRect {
         let space = contentSpace
         guard let s = session.screen else { return space }
@@ -190,7 +206,22 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     }
 
     private var contentSpace: CGRect {
-        windowMode ? windowSpace : view.bounds
+        if windowMode { return windowSpace }
+        var r = view.bounds
+        if let b = bottom { r.size.height = max(0, min(r.height, b)) }
+        return r
+    }
+
+    /// Where the Mac picture has to end: above the toolbar, which itself rides
+    /// above the on-screen keyboard. Laid over the picture, the toolbar covered
+    /// the bottom-right of every Mac window, where send buttons and text fields are.
+    private var bottom: CGFloat? {
+        var b: CGFloat?
+        let k = view.keyboardLayoutGuide.layoutFrame
+        // The on-screen keyboard (accessory row included); a hardware keyboard's shortcut strip doesn't count.
+        if keys.softKeyboard && k.height > 0 { b = k.minY }
+        if toolbar.frame.height > 0 { b = min(b ?? .infinity, toolbar.frame.minY - 4) }
+        return b
     }
 
     private var windowSpace: CGRect {
@@ -199,7 +230,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 #else
         let fold: CGRect? = nil
 #endif
-        return WindowSizing.space(safe: view.bounds.inset(by: view.safeAreaInsets), division: fold)
+        return WindowSizing.space(safe: view.bounds.inset(by: view.safeAreaInsets), division: fold, bottom: bottom)
     }
 
     // MARK: Window mode
@@ -291,9 +322,27 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     }
 
     // Touching the screen stops a coasting scroll, as touching a trackpad does.
+    // In direct mode the cursor goes under the finger at once, before any
+    // gesture has recognized, so it is already there when the finger moves.
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         stopMomentum()
+        if mode == .direct, let t = touches.first, t.type == .direct, event?.allTouches?.count == 1,
+           !(t.view?.isDescendant(of: toolbar) ?? false) {
+            touching = true
+            let (x, y) = normalized(t.location(in: video))
+            session.send(.moveTo(x: x, y: y))
+        }
         super.touchesBegan(touches, with: event)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if event?.allTouches?.allSatisfy({ $0.phase == .ended || $0.phase == .cancelled }) ?? true { touching = false }
+        super.touchesEnded(touches, with: event)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        touching = false
+        super.touchesCancelled(touches, with: event)
     }
 
     // MARK: Touch
@@ -318,7 +367,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         twoTap.allowedTouchTypes = direct
 
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(holdDrag(_:)))
-        hold.minimumPressDuration = 0.3
+        hold.minimumPressDuration = 0.25
         hold.allowableMovement = 12
         hold.allowedTouchTypes = direct
         hold.delegate = self
@@ -338,6 +387,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
     @objc private func onePan(_ g: UIPanGestureRecognizer) {
         guard !dragging else { return }
+        if g.state == .began { cursorMovedByFinger() }
         switch mode {
         case .trackpad:
             if g.state == .began { accel.reset() }
@@ -345,19 +395,37 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
             g.setTranslation(.zero, in: view)
             moveCursor(by: t)
         case .direct:
+            // The cursor follows the finger, no button: like moving a mouse, not dragging one.
+            // Unless the slide started right where a tap just was: tap-then-slide drags, as on a
+            // Mac trackpad. macOS counts that press as a double-click, so text selects by word.
+            let p = g.location(in: view)
             let (x, y) = normalized(g.location(in: video))
-            switch g.state {
-            case .began:
+            if g.state == .began, let t = lastTap, CACurrentMediaTime() - t.time < Self.tapDragWindow, hypot(p.x - t.at.x, p.y - t.at.y) < 40 {
+                tapDragging = true
                 session.send(.moveTo(x: x, y: y))
                 session.send(.button(.left, down: true))
-            case .changed:
-                session.send(.moveTo(x: x, y: y))
-            default:
-                session.send(.moveTo(x: x, y: y))
+                return
+            }
+            session.send(.moveTo(x: x, y: y))
+            if tapDragging && (g.state == .ended || g.state == .cancelled || g.state == .failed) {
+                tapDragging = false
                 session.send(.button(.left, down: false))
             }
         }
     }
+    private var lastTap: (time: CFTimeInterval, at: CGPoint)?
+    /// The keyboard is up because the Mac's focus went into a text input, not
+    /// because you asked: it goes away again when the focus leaves.
+    private var keyboardAutoShown = false
+    private var focusCheck: DispatchWorkItem?
+    /// `-autoKeyboard NO` for UI tests: the terminal running them is a focused text area.
+    private let autoKeyboard = UserDefaults.standard.object(forKey: "autoKeyboard") == nil || UserDefaults.standard.bool(forKey: "autoKeyboard")
+    /// How soon after a tap a slide still counts as tap-then-drag: macOS's default
+    /// double-click interval. `-tapDragWindow <seconds>` for UI tests, whose
+    /// gestures are slower than a hand.
+    private static let tapDragWindow: CFTimeInterval = UserDefaults.standard.object(forKey: "tapDragWindow") != nil
+        ? UserDefaults.standard.double(forKey: "tapDragWindow") : 0.5
+    private var tapDragging = false
 
     /// Two-finger scrolling, with the phases a Mac trackpad sends and momentum
     /// after lift-off. Content moves 1:1 with the fingers as seen on the iPad.
@@ -370,6 +438,12 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
             stopMomentum()
             guard !pinching else { return }
             scrolling = true
+            // Direct mode: scroll what is under the fingers, not wherever the cursor was left.
+            // (Mouse-wheel and trackpad scrolls have no touches and already have the pointer there.)
+            if mode == .direct && g.numberOfTouches == 2 {
+                let (x, y) = normalized(g.location(in: video))
+                session.send(.moveTo(x: x, y: y))
+            }
             session.send(.scroll(dx: Double(t.x) * k, dy: Double(t.y) * k, phase: .began))
         case .changed:
             // A two-finger gesture that turned into a pinch stops scrolling the Mac.
@@ -424,8 +498,10 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         if mode == .direct {
             let (x, y) = normalized(g.location(in: video))
             session.send(.moveTo(x: x, y: y))
+            lastTap = (CACurrentMediaTime(), g.location(in: view))
         }
         click(.left)
+        checkFocusAfterClick()
     }
 
     @objc private func twoFingerTap(_ g: UITapGestureRecognizer) {
@@ -436,9 +512,9 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         click(.right)
     }
 
-    /// Trackpad mode: hold, then drag with the button down.
+    /// Hold, then drag with the button down. Relative in trackpad mode, under the finger in direct mode.
     @objc private func holdDrag(_ g: UILongPressGestureRecognizer) {
-        guard mode == .trackpad else { return }
+        if mode == .direct { return holdDragDirect(g) }
         switch g.state {
         case .began:
             dragging = true
@@ -457,6 +533,23 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         }
     }
     private var lastHold = CGPoint.zero
+
+    private func holdDragDirect(_ g: UILongPressGestureRecognizer) {
+        let (x, y) = normalized(g.location(in: video))
+        switch g.state {
+        case .began:
+            dragging = true
+            session.send(.moveTo(x: x, y: y))
+            session.send(.button(.left, down: true))
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        case .changed:
+            session.send(.moveTo(x: x, y: y))
+        default:
+            dragging = false
+            session.send(.moveTo(x: x, y: y))
+            session.send(.button(.left, down: false))
+        }
+    }
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         // The hold must be able to take over from a pan that has barely started,
@@ -563,10 +656,47 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
     /// While zoomed, keep the Mac cursor inside the middle of the iPad screen.
     private func follow(_ x: Double, _ y: Double) {
-        guard pinchStart == nil else { return }
+        // Panning while a finger is down in direct mode would slide the picture out from under it.
+        guard pinchStart == nil, !touching else { return }
         let before = viewport
         viewport.follow(x: x, y: y)
         if viewport != before { applyZoom() }
+    }
+
+    // MARK: Keyboard follows the Mac's focus
+
+    private func macTextFocus(_ on: Bool) {
+        guard autoKeyboard else { return }
+        if on && !keys.softKeyboard {
+            keyboardAutoShown = true
+            setSoftKeyboard(true)
+        } else if !on && keyboardAutoShown && keys.softKeyboard {
+            keyboardAutoShown = false
+            setSoftKeyboard(false)
+        }
+    }
+
+    /// A tap may have clicked into a text input. Focus that moved arrives as a
+    /// textFocus message; focus that was already there (a terminal, always) sends
+    /// nothing, so look again a moment after the click.
+    private func checkFocusAfterClick() {
+        guard autoKeyboard else { return }
+        focusCheck?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            guard let self, self.session.textFocus, !self.keys.softKeyboard else { return }
+            self.keyboardAutoShown = true
+            self.setSoftKeyboard(true)
+        }
+        focusCheck = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: w)
+    }
+
+    /// Moving the cursor means you've stopped typing: the keyboard gets out of the way.
+    private func cursorMovedByFinger() {
+        focusCheck?.cancel()
+        guard keys.softKeyboard else { return }
+        keyboardAutoShown = false
+        setSoftKeyboard(false)
     }
 
     private func click(_ b: MouseButton) {
@@ -731,9 +861,12 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         return bar
     }
 
+    /// Showing or hiding the keyboard changes the space above it, so the next
+    /// layout resizes the picture, and in window mode the Mac window.
     private func setSoftKeyboard(_ on: Bool) {
         keys.softKeyboard = on
         keys.becomeFirstResponder()
+        view.setNeedsLayout()
     }
 
     // MARK: Toolbar
@@ -770,6 +903,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
         _ = button("keyboard", "Keyboard") { [weak self] _ in
             guard let self else { return }
+            self.keyboardAutoShown = false
             self.setSoftKeyboard(!self.keys.softKeyboard)
         }
         zoomButton = button("plus.magnifyingglass", "Zoom") { [weak self] _ in
@@ -841,12 +975,12 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
             b.configuration?.image = UIImage(systemName: speaker(self.session.audioEnabled))
             self.flash(self.session.audioEnabled ? "Mac sound on" : "Mac sound off")
         }
-        modeButton = button("hand.point.up.left", "Touch mode") { [weak self] b in
+        modeButton = button(mode == .trackpad ? "hand.point.up.left" : "hand.tap", "Touch mode") { [weak self] b in
             guard let self else { return }
             self.mode = self.mode == .trackpad ? .direct : .trackpad
             self.updateAccessibilityValue()
             b.configuration?.image = UIImage(systemName: self.mode == .trackpad ? "hand.point.up.left" : "hand.tap")
-            self.flash(self.mode == .trackpad ? "Trackpad: drag moves the cursor" : "Direct: tap where you want to click")
+            self.flash(self.mode == .trackpad ? "Trackpad: drag moves the cursor" : "Direct: the cursor goes under your finger")
         }
         _ = button("xmark", "Disconnect") { [weak self] _ in
             self?.session.stop()

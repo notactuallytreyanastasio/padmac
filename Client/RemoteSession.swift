@@ -31,6 +31,10 @@ final class RemoteSession: ObservableObject {
     var onCursor: ((Double, Double) -> Void)?
     /// Main thread: a new stream started (first connect, reconnect, display switch).
     var onScreen: ((ScreenInfo) -> Void)?
+    /// Main thread: the Mac's keyboard focus moved into (true) or out of a text input.
+    var onTextFocus: ((Bool) -> Void)?
+    /// The last of those, main thread.
+    private(set) var textFocus = false
 
     private let endpoint: NWEndpoint
     private let code: String
@@ -218,6 +222,13 @@ final class RemoteSession: ObservableObject {
         case .clipboard:
             let text = String(decoding: payload, as: UTF8.self)
             DispatchQueue.main.async { UIPasteboard.general.string = text }
+        case .textFocus:
+            guard payload.count == 1 else { return fail(type) }
+            let on = payload.first == 1
+            DispatchQueue.main.async {
+                self.textFocus = on
+                self.onTextFocus?(on)
+            }
         case .clipboardImage:
             let png = payload
             DispatchQueue.main.async { UIPasteboard.general.setData(png, forPasteboardType: UTType.png.identifier) }

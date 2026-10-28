@@ -70,7 +70,7 @@ targets:
     scheme:
       testTargets: [RemoteMacClientTests, RemoteMacUITests]
   # iPhone Duo: iOS 27.1, which only the Duo runs. The same sources built with
-  # DUO, which turns on the hinge and fold APIs.
+  # DUO, which turns on the hinge and fold APIs and makes direct touch the default.
   RemoteMacDuo:
     templates: [ClientApp]
     deploymentTarget: "27.1"
