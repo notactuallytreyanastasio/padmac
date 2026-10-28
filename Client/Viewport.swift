@@ -10,6 +10,9 @@ struct Viewport: Equatable {
 
     var viewSize: CGSize
     var content: CGRect
+    /// Where the display is centred while it is smaller than the view: the
+    /// whole view, or in window mode the safe area. Nil is the whole view.
+    var area: CGRect?
     private(set) var zoom: CGFloat = 1
     private(set) var offset: CGPoint = .zero
 
@@ -78,12 +81,13 @@ struct Viewport: Equatable {
 
     /// Never show empty space the display could cover; centre it when it is smaller than the view.
     private mutating func clamp() {
-        func axis(_ o: CGFloat, _ lo: CGFloat, _ len: CGFloat, _ span: CGFloat) -> CGFloat {
+        let a = area ?? CGRect(origin: .zero, size: viewSize)
+        func axis(_ o: CGFloat, _ lo: CGFloat, _ len: CGFloat, _ start: CGFloat, _ room: CGFloat, _ span: CGFloat) -> CGFloat {
             let size = zoom * len
-            if size <= span { return (span - size) / 2 - zoom * lo }
+            if size <= room { return start + (room - size) / 2 - zoom * lo }
             return min(max(o, span - zoom * (lo + len)), -zoom * lo)
         }
-        offset = CGPoint(x: axis(offset.x, content.minX, content.width, viewSize.width),
-                         y: axis(offset.y, content.minY, content.height, viewSize.height))
+        offset = CGPoint(x: axis(offset.x, content.minX, content.width, a.minX, a.width, viewSize.width),
+                         y: axis(offset.y, content.minY, content.height, a.minY, a.height, viewSize.height))
     }
 }

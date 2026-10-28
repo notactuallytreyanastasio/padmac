@@ -55,7 +55,9 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     private var displayButton: UIButton!
 
     /// One Mac window rather than the whole display. Remembered between launches.
-    private var windowMode = UserDefaults.standard.object(forKey: "windowMode") as? Bool ?? DeviceKind.current.prefersWindowMode
+    /// (bool(forKey:), not `as? Bool`: a `-windowMode YES` launch argument is the string "YES".)
+    private var windowMode = UserDefaults.standard.object(forKey: "windowMode") != nil
+        ? UserDefaults.standard.bool(forKey: "windowMode") : DeviceKind.current.prefersWindowMode
     /// Bigger or smaller Mac text in window mode. Remembered between launches.
     private var textScale = UserDefaults.standard.object(forKey: "windowTextScale") != nil
         ? CGFloat(UserDefaults.standard.double(forKey: "windowTextScale")) : 1
@@ -93,6 +95,8 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
             guard let self else { return }
             self.announceWindow(info)
             self.viewport = Viewport(viewSize: self.view.bounds.size, content: self.videoRect)
+            self.viewport.area = self.contentSpace
+            self.video.contentRect = self.videoRect
             self.updateDisplayMenu()
             // Test hook: `-zoomFill YES` starts zoomed, for simulator screenshots.
             if UserDefaults.standard.bool(forKey: "zoomFill") {
@@ -163,6 +167,8 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         video.bounds = CGRect(origin: .zero, size: view.bounds.size)
         viewport.viewSize = view.bounds.size
         viewport.content = videoRect
+        viewport.area = contentSpace
+        video.contentRect = videoRect
         viewport.set(zoom: viewport.zoom, offset: viewport.offset) // re-clamp after rotation
         applyZoom()
         updateWindowRequest()
@@ -178,9 +184,13 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     /// stays out of the camera cutout and corners; the whole display uses
     /// every point, since it rarely has the screen's shape anyway.
     private var videoRect: CGRect {
-        let space = windowMode ? windowSpace : view.bounds
+        let space = contentSpace
         guard let s = session.screen else { return space }
         return AVMakeRect(aspectRatio: CGSize(width: s.screenWidth, height: s.screenHeight), insideRect: space)
+    }
+
+    private var contentSpace: CGRect {
+        windowMode ? windowSpace : view.bounds
     }
 
     private var windowSpace: CGRect {
@@ -544,8 +554,11 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 #else
         let fold = "none"
 #endif
-        video.accessibilityValue = String(format: "streaming zoom=%.2f mode=%@ window=%@ hinge=%@",
-                                          viewport.zoom, mode == .trackpad ? "trackpad" : "direct", windowMode ? "on" : "off", fold)
+        // content: where the Mac picture is, as fractions of the screen element, for UI tests to aim at.
+        let r = videoRect, b = view.bounds
+        video.accessibilityValue = String(format: "streaming zoom=%.2f mode=%@ window=%@ hinge=%@ content=%.4f,%.4f,%.4f,%.4f",
+                                          viewport.zoom, mode == .trackpad ? "trackpad" : "direct", windowMode ? "on" : "off", fold,
+                                          r.minX / b.width, r.minY / b.height, r.width / b.width, r.height / b.height)
     }
 
     /// While zoomed, keep the Mac cursor inside the middle of the iPad screen.
@@ -737,12 +750,16 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         NSLayoutConstraint.activate([
             toolbar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
             toolbar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
+            // A folded iPhone Duo is ~420pt wide: never let the buttons run off the left.
+            toolbar.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 8),
         ])
 
         func button(_ symbol: String, _ label: String, _ action: @escaping (UIButton) -> Void) -> UIButton {
             var c = UIButton.Configuration.plain()
             c.image = UIImage(systemName: symbol)
             c.baseForegroundColor = .white
+            // The default 14pt sides made nine buttons 500pt wide, more than a phone has.
+            c.contentInsets = .init(top: 8, leading: 7, bottom: 8, trailing: 7)
             let b = UIButton(configuration: c)
             b.addAction(UIAction { a in action(a.sender as! UIButton) }, for: .primaryActionTriggered)
             b.accessibilityLabel = label

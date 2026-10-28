@@ -44,6 +44,14 @@ class RemoteMacUITests: XCTestCase {
         return Double(v[r.upperBound...].prefix(while: { $0 != " " })) ?? 0
     }
 
+    /// Where the app says the Mac picture is, as fractions of the screen element.
+    fileprivate var content: CGRect {
+        let v = screen.value as? String ?? ""
+        guard let r = v.range(of: "content=") else { return CGRect(x: 0, y: 0, width: 1, height: 1) }
+        let n = v[r.upperBound...].prefix(while: { $0 != " " }).split(separator: ",").compactMap { Double($0) }
+        return n.count == 4 ? CGRect(x: n[0], y: n[1], width: n[2], height: n[3]) : CGRect(x: 0, y: 0, width: 1, height: 1)
+    }
+
     private func at(_ x: Double, _ y: Double) -> XCUICoordinate {
         screen.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y))
     }
@@ -119,13 +127,14 @@ class RemoteMacUITests: XCTestCase {
     func testDirectModeClicksWhereYouTap() throws {
         app.buttons["Touch mode"].tap()
         XCTAssertTrue((screen.value as? String ?? "").contains("mode=direct"))
-        at(0.25, 0.5).tap()
+        // A quarter of the way across the Mac picture, wherever the picture is.
+        let c = content
+        at(c.minX + 0.25 * c.width, c.minY + 0.5 * c.height).tap()
         let e = log.waitFor { self.buttons($0).count >= 2 }
         guard case .moveTo(let x, let y)? = e.first(where: { if case .moveTo = $0 { true } else { false } }) else {
             return XCTFail("no moveTo in \(e)")
         }
-        // A 32:9 Mac display is letterboxed but spans the full width, so x maps straight across.
-        XCTAssertEqual(x, 0.25, accuracy: 0.02)
+        XCTAssertEqual(x, 0.25, accuracy: 0.02, "screen \(screen.frame) in window \(app.windows.firstMatch.frame); value \(String(describing: screen.value))")
         XCTAssertEqual(y, 0.5, accuracy: 0.02)
         XCTAssertEqual(buttons(e), ["left↓", "left↑"])
     }
@@ -139,7 +148,8 @@ class RemoteMacUITests: XCTestCase {
         XCTAssertTrue(keyboard.waitForExistence(timeout: 5),
                       "no on-screen keyboard; turn off I/O > Keyboard > Connect Hardware Keyboard in the simulator")
         for c in text {
-            let key = keyboard.keys[String(c)] // the space bar's label is " "
+            // The space bar's label was " " before iOS 27, "space" since.
+            let key = c == " " && keyboard.keys["space"].exists ? keyboard.keys["space"] : keyboard.keys[String(c)]
             XCTAssertTrue(key.waitForExistence(timeout: 2),
                           "no key \(c); keys: \(keyboard.keys.allElementsBoundByIndex.map { "\($0.identifier)|\($0.label)" })")
             key.tap()
