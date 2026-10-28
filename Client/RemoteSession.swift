@@ -46,6 +46,14 @@ final class RemoteSession: ObservableObject {
     @Published private(set) var audioEnabled = UserDefaults.standard.object(forKey: "audio") as? Bool ?? true
     /// The quality menu. Remembered between launches.
     @Published private(set) var quality = UserDefaults.standard.string(forKey: "quality").flatMap(StreamQuality.init) ?? .full
+    /// Window mode, at this size; nil streams the whole display. Read when the
+    /// Hello goes out, on the session queue, so it is behind a lock.
+    var windowRequest: WindowRequest? {
+        get { windowLock.lock(); defer { windowLock.unlock() }; return _windowRequest }
+        set { windowLock.lock(); _windowRequest = newValue; windowLock.unlock() }
+    }
+    private var _windowRequest: WindowRequest?
+    private let windowLock = NSLock()
     private let meterLock = NSLock()
     private var videoMeter = RateMeter()
     private var totalMeter = RateMeter()
@@ -83,6 +91,22 @@ final class RemoteSession: ObservableObject {
 
     func selectDisplay(_ id: UInt32) {
         conn?.send(.selectDisplay, json: SelectDisplay(displayID: id))
+    }
+
+    /// Switch between one window (at `request`'s size) and the whole display,
+    /// or resize the window after the screen changed shape (fold, rotation).
+    func setWindowMode(_ request: WindowRequest?) {
+        windowRequest = request
+        conn?.send(.setWindowMode, json: WindowModeChange(window: request))
+    }
+
+    /// Window mode: the next (+1) or previous (-1) window in the swipe order.
+    func switchWindow(step: Int) {
+        conn?.send(.switchWindow, json: SwitchWindow(step: step))
+    }
+
+    func showWindow(_ id: UInt32) {
+        conn?.send(.switchWindow, json: SwitchWindow(windowID: id))
     }
 
     func setQuality(_ q: StreamQuality) {
@@ -126,7 +150,13 @@ final class RemoteSession: ObservableObject {
         let c = FramedConnection(NWConnection(to: endpoint, using: PairingSecurity.parameters(code: code)), queue: queue)
         conn = c
         queue.async { self.hostError = nil }
-        c.onReady = { [weak c] in c?.send(.hello, json: hello) }
+        // The window size as it is when the Hello goes out: the view may still
+        // have been laying out when this connect started.
+        c.onReady = { [weak self, weak c] in
+            var hello = hello
+            hello.window = self?.windowRequest
+            c?.send(.hello, json: hello)
+        }
         c.onMessage = { [weak self] type, payload in self?.handle(type, payload) }
         c.onClose = { [weak self, weak c] error in
             guard let self else { return }

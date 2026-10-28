@@ -13,6 +13,11 @@ import UniformTypeIdentifiers
 /// Three-finger swipes are the Mac's trackpad gestures: sideways changes
 /// desktop, up is Mission Control, down is App Exposé.
 ///
+/// Window mode, the default on a phone, streams one Mac window instead of the
+/// whole display, resized on the Mac to the shape of this screen (see
+/// WindowSizing). Folding or rotating resizes it again. There, three fingers
+/// sideways move to the next or previous window and three fingers up list them.
+///
 /// Pinch zooms (a 32:9 display on a 4:3 iPad is unreadable otherwise), moving
 /// the pinch pans, and while zoomed the view follows the Mac cursor. Zoom is a
 /// transform on the video view, so `location(in: video)` still returns
@@ -49,6 +54,15 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     private var zoomButton: UIButton!
     private var displayButton: UIButton!
 
+    /// One Mac window rather than the whole display. Remembered between launches.
+    private var windowMode = UserDefaults.standard.object(forKey: "windowMode") as? Bool ?? DeviceKind.current.prefersWindowMode
+    /// Bigger or smaller Mac text in window mode. Remembered between launches.
+    private var textScale = UserDefaults.standard.object(forKey: "windowTextScale") != nil
+        ? CGFloat(UserDefaults.standard.double(forKey: "windowTextScale")) : 1
+    private var sentWindowRequest: WindowRequest?
+    private var windowResize: DispatchWorkItem?
+    private var shownWindow: UInt32?
+
     init(session: RemoteSession) {
         self.session = session
         super.init(nibName: nil, bundle: nil)
@@ -71,8 +85,9 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         view.addSubview(video)
         session.video = video
         session.onCursor = { [weak self] x, y in self?.follow(x, y) }
-        session.onScreen = { [weak self] _ in
+        session.onScreen = { [weak self] info in
             guard let self else { return }
+            self.announceWindow(info)
             self.viewport = Viewport(viewSize: self.view.bounds.size, content: self.videoRect)
             self.updateDisplayMenu()
             // Test hook: `-zoomFill YES` starts zoomed, for simulator screenshots.
@@ -117,6 +132,12 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         for k in remapper.handle(code, down: down) { session.send(.key(code: k.code, down: k.down)) }
     }
 
+    override func viewIsAppearing(_ animated: Bool) {
+        super.viewIsAppearing(animated)
+        // Before the Hello goes out, so the first stream is already the right one.
+        updateWindowRequest()
+    }
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         keys.becomeFirstResponder()
@@ -129,6 +150,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         viewport.content = videoRect
         viewport.set(zoom: viewport.zoom, offset: viewport.offset) // re-clamp after rotation
         applyZoom()
+        updateWindowRequest()
     }
 
     override var prefersStatusBarHidden: Bool { true }
@@ -137,10 +159,89 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
     // MARK: Geometry
 
-    /// Where the Mac screen is drawn inside the view (aspect-fit).
+    /// Where the Mac screen is drawn inside the view (aspect-fit). A window
+    /// stays out of the camera cutout and corners; the whole display uses
+    /// every point, since it rarely has the screen's shape anyway.
     private var videoRect: CGRect {
-        guard let s = session.screen else { return view.bounds }
-        return AVMakeRect(aspectRatio: CGSize(width: s.screenWidth, height: s.screenHeight), insideRect: view.bounds)
+        let space = windowMode ? windowSpace : view.bounds
+        guard let s = session.screen else { return space }
+        return AVMakeRect(aspectRatio: CGSize(width: s.screenWidth, height: s.screenHeight), insideRect: space)
+    }
+
+    /// The safe area: a window keeps clear of the camera cutout and the corners.
+    private var windowSpace: CGRect {
+        view.bounds.inset(by: view.safeAreaInsets)
+    }
+
+    // MARK: Window mode
+
+    /// Tell the Mac what size the window should be, when that changed. A fold
+    /// lays out several times as it animates; only the size it settles on is sent.
+    private func updateWindowRequest() {
+        let want = windowMode ? WindowSizing.request(for: windowSpace.size, textScale: textScale) : nil
+        // In window mode a nil size is a view not laid out yet, not a request for the whole display.
+        guard !(windowMode && want == nil), want != sentWindowRequest else { return }
+        windowResize?.cancel()
+        let send = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.sentWindowRequest = want
+            self.session.setWindowMode(want)
+        }
+        windowResize = send
+        // The first one goes at once: it may still make it into the Hello.
+        if sentWindowRequest == nil && session.screen == nil { send.perform() } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: send)
+        }
+    }
+
+    private func setWindowMode(_ on: Bool) {
+        windowMode = on
+        UserDefaults.standard.set(on, forKey: "windowMode")
+        windowResize?.cancel()
+        sentWindowRequest = nil
+        shownWindow = nil
+        if !on { session.setWindowMode(nil) }
+        viewDidLayoutSubviews() // new video rect, and in window mode sends the size
+        updateDisplayMenu()
+        flash(on ? "One window, sized for this screen" : "Whole Mac display")
+    }
+
+    private func setTextScale(_ k: CGFloat) {
+        textScale = k
+        UserDefaults.standard.set(Double(k), forKey: "windowTextScale")
+        updateWindowRequest()
+    }
+
+    private func announceWindow(_ info: ScreenInfo) {
+        guard windowMode else { return }
+        guard let w = info.window else {
+            shownWindow = nil
+            return flash("No windows on the Mac's current desktop. Showing the whole screen.", seconds: 3)
+        }
+        if w.id != shownWindow { flash(w.title.isEmpty ? w.app : "\(w.app) — \(w.title)") }
+        shownWindow = w.id
+    }
+
+    private func windowActions() -> [UIAction] {
+        let current = session.screen?.window?.id
+        return (session.screen?.windows ?? []).map { w in
+            UIAction(title: w.title.isEmpty ? w.app : w.title, subtitle: w.title.isEmpty ? nil : w.app,
+                     state: w.id == current ? .on : .off) { [weak self] _ in self?.session.showWindow(w.id) }
+        }
+    }
+
+    /// Three fingers up in window mode: every window, to pick one.
+    private func presentWindowPicker() {
+        let sheet = UIAlertController(title: "Mac windows", message: nil, preferredStyle: .actionSheet)
+        for a in windowActions() {
+            sheet.addAction(UIAlertAction(title: a.subtitle.map { "\(a.title) — \($0)" } ?? a.title, style: .default) { _ in
+                a.performWithSender(nil, target: nil)
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = view
+        sheet.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
+        present(sheet, animated: true)
     }
 
     private func normalized(_ p: CGPoint) -> (Double, Double) {
@@ -362,6 +463,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
     @objc private func threeFingerSwipe(_ g: UIPanGestureRecognizer) {
         let t = g.translation(in: view), size = view.bounds.size
+        if windowMode { return windowSwipe(g, t, size) }
         switch g.state {
         case .began, .changed:
             if let e = swipe.update(translation: t, in: size) { session.send(e) }
@@ -369,6 +471,34 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
             swipe.end(translation: t, in: size).forEach(session.send)
         default:
             swipe.end(translation: t, in: size, cancelled: true).forEach(session.send)
+        }
+    }
+
+    /// Window mode: the picture follows the fingers sideways, and letting go
+    /// far or fast enough moves to the next window (fingers left) or the previous.
+    private func windowSwipe(_ g: UIPanGestureRecognizer, _ t: CGPoint, _ size: CGSize) {
+        switch g.state {
+        case .began, .changed:
+            _ = swipe.update(translation: t, in: size)
+            if swipe.axis == .horizontal {
+                video.transform = viewport.transform.concatenating(CGAffineTransform(translationX: t.x * 0.6, y: 0))
+            }
+        default:
+            let axis = swipe.axis
+            let distance = swipe.end(translation: t, in: size).last.flatMap { e -> Double? in
+                if case .swipe(_, _, let d) = e { return d } else { return nil }
+            } ?? 0
+            UIView.animate(withDuration: 0.2) { self.applyZoom() }
+            guard g.state == .ended else { return }
+            let v = g.velocity(in: view)
+            switch axis {
+            case .horizontal:
+                let step = SwipeTracker.windowStep(distance: distance, velocity: Double(v.x / max(size.width, 1)))
+                if step != 0 { session.switchWindow(step: step) }
+            case .vertical where distance < -0.15 || v.y < -800:
+                presentWindowPicker()
+            default: break
+            }
         }
     }
 
@@ -384,7 +514,8 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
     private func updateAccessibilityValue() {
         guard session.screen != nil else { return }
-        video.accessibilityValue = String(format: "streaming zoom=%.2f mode=%@", viewport.zoom, mode == .trackpad ? "trackpad" : "direct")
+        video.accessibilityValue = String(format: "streaming zoom=%.2f mode=%@ window=%@",
+                                          viewport.zoom, mode == .trackpad ? "trackpad" : "direct", windowMode ? "on" : "off")
     }
 
     /// While zoomed, keep the Mac cursor inside the middle of the iPad screen.
@@ -605,6 +736,24 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
             }
             self.applyZoom()
         }
+        let windows = button("macwindow.on.rectangle", "Windows") { _ in }
+        windows.showsMenuAsPrimaryAction = true
+        // Built when opened: the window list is the one from the latest switch.
+        windows.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in
+            guard let self else { return done([]) }
+            let mode = UIAction(title: self.windowMode ? "Show whole display" : "Show one window",
+                                image: UIImage(systemName: self.windowMode ? "display" : "macwindow")) { [weak self] _ in
+                guard let self else { return }
+                self.setWindowMode(!self.windowMode)
+            }
+            guard self.windowMode else { return done([mode]) }
+            let sizes: [(String, CGFloat)] = [("Larger", 1.25), ("Default", 1), ("Smaller", 0.8)]
+            let text = UIMenu(title: "Mac text size", image: UIImage(systemName: "textformat.size"), children: sizes.map { name, k in
+                UIAction(title: name, state: abs(self.textScale - k) < 0.01 ? .on : .off) { [weak self] _ in self?.setTextScale(k) }
+            })
+            done([UIMenu(title: "Swipe three fingers sideways to change window", options: .displayInline, children: self.windowActions()),
+                  UIMenu(options: .displayInline, children: [text, mode])])
+        }])
         displayButton = button("display.2", "Display") { _ in }
         displayButton.showsMenuAsPrimaryAction = true
         displayButton.isHidden = true
@@ -660,7 +809,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
     private func updateDisplayMenu() {
         guard let info = session.screen else { return }
-        displayButton.isHidden = info.displays.count < 2
+        displayButton.isHidden = info.displays.count < 2 || windowMode
         displayButton.menu = UIMenu(title: "Show display", children: info.displays.map { d in
             UIAction(title: d.name, subtitle: "\(Int(d.width)) × \(Int(d.height))", state: d.id == info.displayID ? .on : .off) { [weak self] _ in
                 self?.session.selectDisplay(d.id)

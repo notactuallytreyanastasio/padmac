@@ -46,3 +46,14 @@ struct SwipeTracker {
         }
     }
 }
+
+extension SwipeTracker {
+    /// Window mode: which way a finished sideways swipe moves. Fingers left is
+    /// the next window, as with desktops. A quarter of the screen commits, or
+    /// a flick of more than one screen-width a second the way it is moving.
+    static func windowStep(distance: Double, velocity: Double) -> Int {
+        if distance <= -0.25 || (distance < -0.05 && velocity < -1) { return 1 }
+        if distance >= 0.25 || (distance > 0.05 && velocity > 1) { return -1 }
+        return 0
+    }
+}
