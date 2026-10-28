@@ -3,7 +3,7 @@ options:
   bundleIdPrefix: com.bgrayson.remotemac
   deploymentTarget:
     macOS: "14.0"
-    iOS: "17.0"
+    iOS: "27.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -12,6 +12,31 @@ settings:
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
+targetTemplates:
+  ClientApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: Client
+        excludes: ["*Info.plist"]
+      - Shared
+    info:
+      properties:
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationPortrait
+        NSLocalNetworkUsageDescription: Finds Macs running Remote Mac Host on your network.
+        NSBonjourServices: [_remotemac._tcp]
+        UIApplicationSupportsIndirectInputEvents: true
 targets:
   RemoteMacHost:
     type: application
@@ -31,35 +56,35 @@ targets:
         CODE_SIGN_IDENTITY: Apple Development
     scheme:
       testTargets: [RemoteMacTests]
+  # iPad, and iPhones other than the Duo: iOS 27.0.
   RemoteMac:
-    type: application
-    platform: iOS
-    sources: [Client, Shared]
+    templates: [ClientApp]
     info:
       path: Client/Info.plist
       properties:
         CFBundleDisplayName: Remote Mac
-        UILaunchScreen: {}
-        UIRequiresFullScreen: true
-        UIStatusBarHidden: true
-        UISupportedInterfaceOrientations~ipad:
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationPortraitUpsideDown
-        UISupportedInterfaceOrientations:
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
-          - UIInterfaceOrientationPortrait
-        NSLocalNetworkUsageDescription: Finds Macs running Remote Mac Host on your network.
-        NSBonjourServices: [_remotemac._tcp]
-        UIApplicationSupportsIndirectInputEvents: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.bgrayson.remotemac.ipad
         TARGETED_DEVICE_FAMILY: "1,2"
     scheme:
       testTargets: [RemoteMacClientTests, RemoteMacUITests]
+  # iPhone Duo: iOS 27.1, which only the Duo runs. The same sources built with
+  # DUO, which turns on the hinge and fold APIs.
+  RemoteMacDuo:
+    templates: [ClientApp]
+    deploymentTarget: "27.1"
+    info:
+      path: Client/Duo-Info.plist
+      properties:
+        CFBundleDisplayName: Remote Mac Duo
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bgrayson.remotemac.duo
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DUO"
+    scheme:
+      testTargets: [RemoteMacDuoUITests]
   probe:
     scheme: {}
     type: tool
@@ -108,3 +133,15 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: RemoteMac
+  RemoteMacDuoUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "27.1"
+    sources: [Tests/UI, Shared/Wire.swift]
+    dependencies:
+      - target: RemoteMacDuo
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: RemoteMacDuo
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DUO"

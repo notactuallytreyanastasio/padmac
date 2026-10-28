@@ -27,6 +27,20 @@ enum WindowSizing {
     }
 }
 
+extension WindowSizing {
+    /// The part of the screen the Mac window gets. Normally the safe area. With
+    /// iPhone Duo partly open, the fold is an active division region: the window
+    /// then takes the side above it (or before it, for an upright fold) and the
+    /// other side is left as the trackpad, like a laptop's lid and deck.
+    static func space(safe: CGRect, division: CGRect?) -> CGRect {
+        guard let d = division, safe.intersects(d) else { return safe }
+        if d.width >= d.height {
+            return CGRect(x: safe.minX, y: safe.minY, width: safe.width, height: max(0, d.minY - safe.minY))
+        }
+        return CGRect(x: safe.minX, y: safe.minY, width: max(0, d.minX - safe.minX), height: safe.height)
+    }
+}
+
 /// What the app runs on, for its defaults. Layout never branches on this:
 /// the window is sized from the space the app actually has, so a folding
 /// phone, iPad Split View and Stage Manager all come out right without knowing.
