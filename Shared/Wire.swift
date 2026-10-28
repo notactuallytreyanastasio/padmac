@@ -24,6 +24,9 @@ enum MessageType: UInt8 {
     case cursor = 0x06
     /// See `AudioPayload`. Only sent to a client whose Hello asked for audio.
     case audio = 0x07
+    /// One byte: 1 when the Mac's keyboard focus is in something you type into
+    /// (a text field, a text view, a terminal), 0 when it left. Sent on change.
+    case textFocus = 0x09
 
     // both directions
     /// UTF-8 text now on the sender's clipboard.

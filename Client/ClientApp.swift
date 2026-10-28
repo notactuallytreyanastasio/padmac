@@ -132,21 +132,27 @@ struct HostPicker: View {
             }
         }
         .onDisappear { browser.stop() }
-        .alert("Pairing code", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
+        .alert("Pairing code", isPresented: pendingShown) {
             TextField("ABCD-EFGH", text: $code)
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
-            Button("Connect") {
-                if let p = pending, PairingSecurity.normalize(code).count == 8 {
-                    Keychain.set(PairingSecurity.normalize(code), for: p.name)
-                    start(p.name, p.endpoint, PairingSecurity.normalize(code))
-                }
-                pending = nil
-            }
+            Button("Connect", action: submitCode)
             Button("Cancel", role: .cancel) { pending = nil }
         } message: {
             Text("Enter the code shown in the Remote Mac Host menu on \(pending?.name ?? "the Mac").")
         }
+    }
+
+    private var pendingShown: Binding<Bool> {
+        Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })
+    }
+
+    private func submitCode() {
+        if let p = pending, PairingSecurity.normalize(code).count == 8 {
+            Keychain.set(PairingSecurity.normalize(code), for: p.name)
+            start(p.name, p.endpoint, PairingSecurity.normalize(code))
+        }
+        pending = nil
     }
 
     private func openAddress() {

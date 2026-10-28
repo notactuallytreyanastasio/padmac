@@ -2,15 +2,22 @@
 
 Use your iPad as a screen, trackpad and keyboard for your Mac, over your home
 Wi-Fi. You see the Mac's full display on the iPad, with sound, and you control
-it with touch, an iPad trackpad or mouse, or a keyboard.
+it with touch, an iPad trackpad or mouse, or a keyboard. On an iPhone or an
+iPhone Duo, where a whole Mac display would be too small to read, you see one
+Mac window at a time instead, resized on the Mac to fit the phone.
 
-There are two apps:
+There are three apps:
 
 - **Remote Mac Host** runs on the Mac. It lives in the menu bar (the strip of
   icons at the top right of the screen), sends the screen to the iPad, and does
   what the iPad tells it.
-- **Remote Mac** runs on the iPad. It finds your Mac on the network and shows
-  its screen.
+- **Remote Mac** runs on the iPad, or an iPhone. It finds your Mac on the
+  network and shows its screen.
+- **Remote Mac Duo** is the same app built for the iPhone Duo. It knows about
+  the Duo's fold, and a finger puts the Mac's cursor right under it.
+
+The guide below says "iPad" throughout. On an iPhone or iPhone Duo every step
+is the same, except where it says otherwise.
 
 Neither app is on the App Store. You build both yourself, on your own Mac, from
 the files in this repository. That sounds harder than it is: you copy and paste
@@ -47,8 +54,15 @@ below). Your settings survive the reinstall.
 
 - **A Mac running macOS 14 (Sonoma) or newer.** To check: Apple menu  ›
   About This Mac.
-- **An iPad running iPadOS 17 or newer.** To check: Settings › General ›
-  About. One with an M-series chip works best. See
+- **An iPad or iPhone running iOS / iPadOS 27.0 or newer, or an iPhone Duo.**
+  To check: Settings › General › About. A device still on iOS 26 has to be
+  updated first: the app won't install on it. There are two apps from the same code:
+  **Remote Mac** for iPad and iPhone (iOS 27.0), and **Remote Mac Duo** for
+  iPhone Duo (iOS 27.1, which only the Duo runs). Both are built with the iOS
+  27.1 SDK, so the Mac that builds them needs **Xcode 27.1, which needs macOS
+  Tahoe 26.6 or newer**. On an iPad you get the whole Mac display; on a phone,
+  one Mac window at a time ([Window mode](#window-mode-iphone-and-iphone-duo)).
+  An iPad with an M-series chip works best. See
   [What does not work](#what-does-not-work--not-done) for older iPads.
 - **A USB cable** that connects the iPad to the Mac. You need it once per week
   at most, and possibly only once.
@@ -121,8 +135,8 @@ To check everything is in place:
 xcodegen --version && xcodebuild -version
 ```
 
-You should see two version numbers, something like `Version: 2.44.1` and
-`Xcode 26.6`. If you see an error instead, look at
+You should see two version numbers, something like `Version: 2.46.0` and
+`Xcode 27.1`. An older Xcode can't build the app. If you see an error instead, look at
 [Troubleshooting](#troubleshooting).
 
 ## Part 2. Download this project
@@ -242,6 +256,16 @@ one, and keeps it the same every time you rebuild. To find the file in Finder:
 open -R RemoteMac.ipa
 ```
 
+**On an iPhone Duo**, build the Duo app instead:
+
+```sh
+./scripts/build-ipa.sh duo
+```
+
+It writes `RemoteMacDuo.ipa` (bundle ID `io.github.remotemac.duo-` and the
+same eight characters). Wherever the steps below say `RemoteMac.ipa`, use
+`RemoteMacDuo.ipa`. On any other iPhone, `RemoteMac.ipa` is the right one.
+
 ### Install Sideloadly
 
 1. Download it from [sideloadly.io](https://sideloadly.io) (the **macOS**
@@ -322,14 +346,17 @@ The Mac's screen appears. The iPad remembers the code, so next time you just
 tap the Mac. If the screen stays black or it says it can't connect, see
 [Troubleshooting](#troubleshooting).
 
-By default a finger on the screen works like a laptop trackpad: drag to move
-the pointer, tap to click. The full list is under [Controls](#controls).
+On an iPad, a finger on the screen works like a laptop trackpad by default:
+drag to move the pointer, tap to click. On an iPhone Duo the pointer goes
+straight under your finger instead: touch to put it there, tap to click. The
+hand button in the toolbar switches between the two. The full list is under
+[Controls](#controls).
 
 ## Every 7 days: refresh the iPad app
 
 With a free Apple ID, the app stops opening 7 days after it was installed.
 To renew it, repeat **Sideload the app** from Part 4: plug in,
-drag `RemoteMac.ipa` onto Sideloadly, **Start**. You don't need to rebuild,
+drag `RemoteMac.ipa` (or `RemoteMacDuo.ipa`) onto Sideloadly, **Start**. You don't need to rebuild,
 redo Developer Mode, or re-enter the pairing code.
 
 To have this happen on its own, Sideloadly can refresh apps in the background
@@ -430,10 +457,10 @@ the same bundle ID once one works.
 cd ~/padmac
 git pull
 ./scripts/install-host.sh
-./scripts/build-ipa.sh
+./scripts/build-ipa.sh        # or: ./scripts/build-ipa.sh duo
 ```
 
-Then sideload the new `RemoteMac.ipa` as in Part 4.
+Then sideload the new `.ipa` as in Part 4.
 
 One thing to expect: because the Mac app is signed for your Mac only, macOS
 sees each rebuild as a slightly different app and **forgets its Screen
@@ -462,18 +489,24 @@ app like any other. You can turn Developer Mode back off in Settings › Privacy
 
 ## Controls
 
-| Input | Trackpad mode (default) | Direct mode |
+| Input | Trackpad mode (iPad default) | Direct mode (iPhone Duo default) |
 |---|---|---|
-| 1-finger drag | move cursor (relative, accelerated) | drag with button held |
+| touch | — | cursor jumps under your finger |
+| 1-finger drag | move cursor (relative, accelerated) | cursor follows your finger, no button |
 | tap | click (double-tap = double-click) | click there |
 | 2-finger tap | right-click | right-click there |
-| 2-finger drag | scroll | scroll |
-| touch, hold, drag | drag | — |
+| 2-finger drag | scroll, any direction, with momentum, like a Mac trackpad | scroll what's under your fingers |
+| touch, hold a moment (¼ s), drag | drag | drag from under your finger (highlights text letter by letter) |
+| tap, then within half a second touch the same spot and drag | — | drag; macOS counts it as a double-click, so text highlights word by word |
 | pinch | zoom (1–8×); move the pinch to pan | same |
 | 3-finger swipe left/right | next/previous desktop, following your fingers like a Mac trackpad | same |
 | 3-finger swipe up/down | Mission Control / App Exposé | same |
 
-While zoomed, the view follows the Mac cursor. The toolbar's magnifier toggles
+The hand button in the toolbar switches between the two modes. The iPad app
+starts in trackpad mode, the Duo app in direct mode.
+
+While zoomed, the view follows the Mac cursor, except while a finger is down
+in direct mode, so the picture doesn't slide out from under it. The toolbar's magnifier toggles
 between the whole display and filling the iPad's short side, which is the
 useful zoom for an ultrawide. A display button appears when the Mac has more
 than one active display.
@@ -510,12 +543,66 @@ app can capture them), so ⌥ stands in:
 | ⌥Space | ⌘Space Spotlight |
 
 ⌥ with any other key is passed through unchanged. If you press ⌘Tab out of
-habit and iPadOS switches apps, Remote Mac reminds you when you come back. The on-screen keyboard (toolbar ⌨) types
-literal text and has an accessory row: esc, tab, sticky ⌃⌥⌘⇧ and arrows.
-Sticky modifiers apply to the next key, so ⌘ then `c` copies.
+habit and iPadOS switches apps, Remote Mac reminds you when you come back.
+
+The on-screen keyboard types literal text and has an accessory row: esc, tab,
+sticky ⌃⌥⌘⇧, arrows, and ⌨︎↓ to put it away. Sticky modifiers apply to the
+next key, so ⌘ then `c` copies. You don't usually have to ask for it:
+
+- **It opens by itself** when the Mac's keyboard focus goes into something you
+  type into: a text field, a text view, a search box, or a terminal. If it
+  opened by itself, it closes again when the focus leaves.
+- **Tapping reopens it.** A terminal's focus never moves, so the Mac has
+  nothing new to report; a moment after each tap the app checks whether the
+  focus is in text and brings the keyboard back if so.
+- **Sliding one finger puts it away**, in either touch mode: moving the cursor
+  means you've stopped typing.
+- The toolbar's keyboard button opens and closes it by hand.
+
+The Mac picture always ends just above the toolbar, and the toolbar sits just
+above the keyboard when that is up. So the toolbar never covers the
+bottom-right corner of the Mac's screen or window, where text fields and send
+buttons usually are, and the keyboard never covers the field you're typing in.
 
 While an iPad is connected, the Mac's display is woken and kept from sleeping.
 The menu bar panel shows who's connected and has a **Disconnect** button.
+
+### Window mode (iPhone and iPhone Duo)
+
+A whole Mac display is unreadable on a phone, so on an iPhone the app shows
+one Mac window at a time instead, and the Mac resizes that window to the
+phone's shape. Folding or unfolding an iPhone Duo, or rotating, resizes it
+again. When you disconnect, every window goes back where it was.
+
+| Input | Window mode |
+|---|---|
+| 3-finger swipe left/right | next/previous window (the picture follows your fingers) |
+| 3-finger swipe up | list of windows to pick from |
+
+Everything else is as in the table above. When the on-screen keyboard opens,
+the Mac window is resized to the space above it and the toolbar, so the field
+you're typing in stays visible; it grows back when the keyboard closes. The
+window button in the toolbar
+lists the windows, switches between one window and the whole display (on any
+device; the choice is remembered), and sets **Mac text size**.
+
+How big the window gets: about 840 Mac points wide in portrait, which most
+Mac apps accept, and at least 600 tall, in the shape of the phone's screen
+inside its safe area. On an unfolded Duo in portrait that is about 1.35 Mac
+points per iPhone point. Folded, it is about 1.8, so text is smaller. A Mac
+window is never made larger than the Mac's own screen; a tall phone shape is
+scaled down to fit, keeping its shape. **Larger** and **Smaller** under Mac
+text size trade room for legibility.
+
+Half open, like a small laptop, the fold is in the way, so the Mac window
+takes the half above it and the half below is the trackpad. With the fold
+upright, the window takes the left half. This uses iOS 27.1's hinge and
+fold-region APIs (`UIHingeInteraction`, `reservedRegions(kind: .division)`).
+
+The window's menus, popovers and sheets show, because the host captures all
+of that app's windows, cropped to the window. The Mac cursor stays inside the
+window. If the window closes, the next one is shown. If you move or resize it
+on the Mac, the stream follows it instead of resizing it back.
 
 ## For developers
 
@@ -528,6 +615,19 @@ finds hosts over Bonjour (`_remotemac._tcp`), decodes with
 `AVSampleBufferDisplayLayer`, and reconnects on its own after being
 backgrounded or losing Wi-Fi.
 
+In window mode the host lists the Mac's windows (window server layer 0,
+filtered through Accessibility to standard windows and titled dialogs),
+raises and resizes the chosen one through Accessibility, and captures that
+app's windows cropped to the window's frame, so its menus and sheets are in
+the picture. Wire messages `setWindowMode` (0x16) and `switchWindow` (0x17)
+drive it; `ScreenInfo` carries the window and the swipe order.
+
+For the keyboard, the host checks every 0.3 s whether the frontmost app's
+focused element is text (role `AXTextField`, `AXTextArea`, `AXComboBox` or
+`AXSearchField`, or anything with a settable value and a text selection) and
+sends `textFocus` (0x09, one byte) when that changes. iTerm2's terminal
+reports `AXTextArea`; Messages' field, `AXTextField`.
+
 The link is TLS 1.2 with a pre-shared key derived from the 8-character pairing
 code. There are no certificates and no accounts. A client without the code
 fails the handshake (`-9820: bad MAC`).
@@ -538,14 +638,35 @@ fails the handshake (`-9820: bad MAC`).
 `scripts/install-host.sh` tries that first and falls back to an ad-hoc
 signature when this Mac can't sign as that team. `scripts/build-ipa.sh` builds
 unsigned, with a bundle ID derived from the Mac's hardware UUID (override with
-`REMOTEMAC_BUNDLE_ID`), for Sideloadly or AltStore to re-sign.
+`REMOTEMAC_BUNDLE_ID`), for Sideloadly or AltStore to re-sign;
+`scripts/build-ipa.sh duo` does the same for the Duo app.
+
+### Two apps from one source
+
+iOS 27.1 exists only for the iPhone Duo: Xcode 27.1's 27.1 simulator runs
+exactly one device type, iPhone Duo, and every other iPhone and iPad tops out
+at 27.0. So `project.yml` builds the `Client` sources twice from one template
+(`targetTemplates: ClientApp`):
+
+| Target | Deployment | Devices | Bundle ID |
+|---|---|---|---|
+| `RemoteMac` | iOS 27.0 | iPad and iPhone | `com.bgrayson.remotemac.ipad` |
+| `RemoteMacDuo` | iOS 27.1 | iPhone (`TARGETED_DEVICE_FAMILY 1`) | `com.bgrayson.remotemac.duo` |
+
+`RemoteMacDuo` adds the `DUO` compilation condition. Code under `#if DUO` uses
+the 27.1 hinge and fold APIs (`UIHingeInteraction`,
+`reservedRegions(kind: .division)`) and makes direct touch the default; the
+27.0 app contains none of it.
 
 ### Installing with Xcode instead
 
 With a paid developer account, put your team ID in `DEVELOPMENT_TEAM` in
 `project.yml` and change the two `com.bgrayson.remotemac` bundle IDs, then plug
 the iPad in, trust the Mac, enable Developer Mode, and run
-`./scripts/install-ipad.sh`. Apps installed this way last a year instead of
+`./scripts/install-ipad.sh`. For an iPhone Duo, `./scripts/install-duo.sh`
+does the same: it finds the Duo by its model (`iPhone19,4`), not its name,
+skips simulators, and waits up to 10 minutes the first time while Xcode
+prepares the phone for development. Apps installed this way last a year instead of
 7 days. A free Personal Team works the same way after signing in under Xcode ›
 Settings › Accounts, with the 7-day limit; this path hasn't been tested with a
 free team.
@@ -553,36 +674,80 @@ free team.
 ### Tests
 
 ```sh
-./scripts/test.sh          # everything; leaves your cursor and clipboard alone
-./scripts/test.sh --live   # also moves the real cursor and round-trips the clipboard
+./scripts/test.sh          # everything that leaves your cursor, clipboard and windows alone (~12 min)
+./scripts/test.sh --live   # also moves the real cursor, round-trips the clipboard,
+                           # and resizes real windows (then puts them back)
 ```
 
 What runs:
 
 | Layer | Where | What it proves |
 |---|---|---|
-| `RemoteMacTests` (52) | macOS | Wire format round-trips and rejects malformed input. Framing over a real TLS-PSK socket: 5 MB messages, wrong code rejected, unknown or oversized messages hang up, video backpressure. HEVC at 5120×1440 and H.264 encoded and decoded through the real pipeline. Input logic: double-click counting, ⌘ flags on ⌘C, key repeat, text chunking, the lost-delta bug. The iPad key map checked against macOS's real US layout. The host server in dry-run mode. The display staying awake only while an iPad is connected. |
-| `RemoteMacClientTests` (14) | iPad simulator | Zoom/pan geometry (no gaps, the pinch anchor stays put, follow-the-cursor) and three-finger swipe axis locking. |
-| `RemoteMacUITests` (10) | iPad simulator | The real app, with real taps, drags, pinches and keyboard keys, against a real host in `-dryRunInput` mode. Assertions are on the input the host received. |
-| `probe` | macOS | Real screen capture → HEVC → TLS → decode, a stream restart, and median capture-to-decode latency under 50 ms (this Mac: ~18 ms idle, ~40 ms under heavy load). |
+| `RemoteMacTests` (78) | macOS | Wire format round-trips and rejects malformed input. Framing over a real TLS-PSK socket: 5 MB messages, wrong code rejected, unknown or oversized messages hang up, video backpressure. HEVC at 5120×1440 and H.264 encoded and decoded through the real pipeline. Input logic: double-click counting, ⌘ flags on ⌘C, key repeat, text chunking, the lost-delta bug. The iPad key map checked against macOS's real US layout. Clipboard: text and images sent once, concealed items kept on the Mac, no echo, the Universal Clipboard bounce. The host server in dry-run mode, and the display staying awake only while an iPad is connected. Window mode: the swipe order survives raising a window (which reorders the z-order), and a window is placed on the Mac's screen keeping the phone's shape, on a second display too. |
+| `RemoteMacClientTests` (53) | iPad simulator | Zoom/pan geometry (no gaps, the pinch anchor stays put, follow-the-cursor, a window centred in the safe area, not the whole view), three-finger swipe axis locking, pointer acceleration, the ⌥Tab / ⌥Space remapping, the audio buffer, the rate meter. Window sizing: the Mac window size for a folded and an unfolded phone, the fold giving the window the top or left half, the keyboard pushing it up, and when a window swipe commits. |
+| `RemoteMacUITests` (30) | iPad simulator (iOS 27.0) | The real app, with real taps, drags, pinches and keyboard keys, against a real host in `-dryRunInput -dryRunWindows` mode. Assertions are on the input the host received. 14 tests run twice, on the whole display and again in window mode (`WindowModeUITests`), which adds two of its own: the window list, and the picture staying above the keyboard. |
+| `RemoteMacDuoUITests` (30) | iPhone Duo simulator (iOS 27.1) | The same tests against the Duo app. |
+| `probe` | macOS | Real screen capture → HEVC → TLS → decode, a stream restart, a quality switch, and median capture-to-decode latency under 50 ms (this Mac, on macOS 27.2: 18.5 ms). |
+| `probe`, live (`test.sh --live`) | macOS | The real cursor, clipboard, desktop swipes, audio, ⌥Tab / ⌥Space and keyboard focus (`--focus`, with the terminal in front), and, against real windows, `--window`: the frontmost is resized to exactly 700×500, streamed at that shape, `moveTo(0.5, 0.5)` lands in its centre, swipes +1 and −1 land on the right windows, and every window is back where it was after disconnect. Needs two ordinary windows on the current desktop. |
 
-The UI tests need the simulator's on-screen keyboard (I/O › Keyboard ›
+The UI tests need an iPad Pro 13-inch (M5) simulator and an iPhone Duo
+simulator (iOS 27.1), both with the on-screen keyboard (I/O › Keyboard ›
 Connect Hardware Keyboard off). The host needs Screen Recording permission
 for your terminal.
 
 The probe also works on its own, against any host:
 
 ```sh
-probe <host[:port]> <code> frame.png [--move] [--displays] [--clipboard] [--swipe] [--h264] [--latency]
+probe <host[:port]> <code> [frame.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys] [--quality]
+      [--window] [--window-resize] [--focus] [--latency] [--no-latency-check]
 ```
+
+`--window` asks for window mode at 700×500 and checks the frontmost window
+against that. `--window-resize` sends five window sizes 0.35 s apart (what the
+keyboard opening and closing does) and checks the last one sticks and video
+still decodes. `--focus` expects a text input focused in the frontmost app and
+checks the host reports it. `--latency` lists the slowest frames;
+`--no-latency-check` keeps the numbers but drops the 50 ms check.
 
 To run a second host next to an installed one, launch its binary with
 `-port 47429 -pairingCode TESTCODE`. Add `-dryRunInput YES -inputLog <path>`
-and it logs input instead of posting it. `-traceLatency YES` logs where the
-time goes between capture and the wire.
+and it logs input instead of posting it. `-dryRunWindows YES` makes window
+mode list and switch windows without ever raising or resizing one.
+`-traceLatency YES` logs where the time goes between capture and the wire.
+
+The phone and iPad apps take launch arguments too, for UI tests:
+`-autoconnect <host>[:port] -code <code>` connects straight away,
+`-windowMode YES|NO` and `-touchMode trackpad|direct` override the defaults,
+`-tapDragWindow <seconds>` widens the tap-then-drag window (XCUITest leaves
+over a second between two gestures), `-autoKeyboard NO` stops the keyboard
+following the Mac's focus (the terminal running the tests is itself a
+focused text area), and `-zoomFill YES` starts zoomed.
 
 ## What does not work / not done
 
+- **Window mode only reaches windows on the Mac's current desktop.** macOS's
+  Accessibility API, which does the resizing, can't see windows on other
+  desktops, and minimized windows are not listed. Full-screen windows are
+  shown as they are, not resized.
+- **Window mode can't open the Mac's menu bar**: it's outside the window.
+  Use keyboard shortcuts, or switch to the whole display from the window
+  button.
+- **Window mode's window list refreshes on every switch, not live.** A window
+  opened on the Mac shows up in the toolbar list after the next swipe.
+- **iPhone Duo hardware has barely been used.** On a real Duo the app was
+  installed and launched, and its first Bonjour browse failed
+  (`-65569 DefunctConnection`; the app now retries). Folding, the half-open
+  layout and the hinge are tested only in the iPhone Duo simulator.
+- **The picture froze once on the iPhone Duo after typing and then moving the
+  cursor; not reproduced.** `probe --window-resize`, which resizes the window
+  five times in two seconds as the keyboard does, keeps video decoding, and
+  macOS 27.2's unified log shows nothing from the host to go on.
+- **Two touch behaviours have no automated test**: the cursor jumping under
+  a finger the moment it touches, and two-finger scrolling (in direct mode it
+  first moves the cursor between your fingers). XCUITest can't drag with two
+  fingers.
+- **Neither app runs on iOS 26.** The iPad and iPhone builds need iOS 27.0,
+  so a device on 26.6.1 has to update before it can install them.
 - **Switching to a second display is untested.** The dev Mac had its lid
   closed, so only one display was active. Re-selecting the same display (the
   path a resolution change also takes) is tested.
@@ -593,7 +758,8 @@ time goes between capture and the wire.
 - **Desktop swipes rely on undocumented Dock events.** The event layout is
   Mac Mouse Fix's, verified on macOS 26.2 (`probe --swipe` changes desktop and
   back and checks it through SkyLight). Mac Mouse Fix reports that macOS 27
-  ignores these fields, so expect swipes to stop working there.
+  ignores these fields; that hasn't been checked here, so desktop swipes may
+  not work on macOS 27.
 - **iPadOS keeps some shortcuts.** ⌘Tab and ⌘Space have ⌥ stand-ins (above).
   ⌘H, and Globe shortcuts, still go to the iPad.
 - **Clipboard has no files**, only text and images.

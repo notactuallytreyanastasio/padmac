@@ -34,6 +34,8 @@ final class HostSession {
     private var starting = false
     private var windowRetries = 0
     private let dryRunWindows = UserDefaults.standard.bool(forKey: "dryRunWindows")
+    private var focusTimer: DispatchSourceTimer?
+    private var lastTextFocus: Bool?
 
     var onStatus: ((String) -> Void)?
     var onEnd: ((HostSession, Error?) -> Void)?
@@ -96,6 +98,7 @@ final class HostSession {
         generation += 1
         cursorTimer?.cancel()
         windowTimer?.cancel()
+        focusTimer?.cancel()
         injector.releaseAll()
         restoreWindows()
         let clipboard = self.clipboard, observer = screenObserver
@@ -117,6 +120,7 @@ final class HostSession {
             startStream(on: h.displayID)
             startCursorReports()
             startWindowWatch()
+            startFocusWatch()
             startClipboard()
             watchDisplayChanges()
         case .input:
@@ -156,7 +160,7 @@ final class HostSession {
         case .clipboardImage:
             // Synchronously, for the same reason as text.
             DispatchQueue.main.sync { self.clipboard?.set(.image(payload)) }
-        case .screenInfo, .videoFormat, .videoFrame, .error, .cursor, .audio:
+        case .screenInfo, .videoFormat, .videoFrame, .error, .cursor, .audio, .textFocus:
             fail(.badPayload(type))
         }
     }
@@ -326,6 +330,27 @@ final class HostSession {
         }
         t.resume()
         windowTimer = t
+    }
+
+    /// Tells the client when keyboard focus moves into or out of a text input,
+    /// so it can bring up its keyboard. Polled: AX focus notifications need an
+    /// observer per app, and the frontmost app changes. AX round trips, so on
+    /// its own queue, not the session's.
+    private func startFocusWatch() {
+        let t = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "remotemac.focus", qos: .utility))
+        t.schedule(deadline: .now() + 0.3, repeating: .milliseconds(300))
+        let conn = self.conn
+        t.setEventHandler { [weak self] in
+            guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return }
+            let now = AXWindow.focusIsText(pid: pid)
+            self?.queue.async {
+                guard let self, now != self.lastTextFocus else { return }
+                self.lastTextFocus = now
+                conn.send(.textFocus, Data([now ? 1 : 0]))
+            }
+        }
+        t.resume()
+        focusTimer = t
     }
 
     /// Puts every window this session resized back where it was.
