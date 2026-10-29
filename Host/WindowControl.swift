@@ -10,6 +10,8 @@ struct MacWindow: Equatable {
     var app: String
     var title: String
     var frame: CGRect
+    /// False on another desktop, minimized, or its app hidden.
+    var onScreen = true
 
     var info: WindowInfo { WindowInfo(id: id, app: app, title: title, width: frame.width, height: frame.height) }
 }
@@ -21,16 +23,26 @@ enum WindowList {
     /// The window server's layer-0 windows that Accessibility calls real
     /// windows, frontmost first. Layer 0 alone is not enough: iTerm2 keeps a
     /// 1512x68 untitled strip there that AX does not list.
+    ///
+    /// Every desktop's windows, and minimized ones: on-screen first, front to
+    /// back, then the rest. Accessibility only sees the current desktop, so
+    /// it can sort standard windows from panels only there; elsewhere a
+    /// window counts if it has a title.
     static func switchable() -> [MacWindow] {
-        let all = onScreen()
+        let all = windows(onScreenOnly: false)
+        let visible = all.filter(\.onScreen)
         var standard: [pid_t: Set<CGWindowID>] = [:]
-        for pid in Set(all.map(\.pid)) { standard[pid] = AXWindow.standardWindowIDs(pid: pid) }
-        return all.filter { standard[$0.pid]?.contains($0.id) == true }
+        for pid in Set(visible.map(\.pid)) { standard[pid] = AXWindow.standardWindowIDs(pid: pid) }
+        let here = visible.filter { standard[$0.pid]?.contains($0.id) == true }
+        let elsewhere = all.filter { !$0.onScreen && !$0.title.isEmpty }
+        return here + elsewhere
     }
 
     /// Frontmost first.
-    static func onScreen() -> [MacWindow] {
-        let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+    static func onScreen() -> [MacWindow] { windows(onScreenOnly: true) }
+
+    private static func windows(onScreenOnly: Bool) -> [MacWindow] {
+        let opts: CGWindowListOption = onScreenOnly ? [.optionOnScreenOnly, .excludeDesktopElements] : [.optionAll, .excludeDesktopElements]
         guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else { return [] }
         let me = getpid()
         return list.compactMap { w in
@@ -40,8 +52,10 @@ enum WindowList {
                   (w[kCGWindowAlpha as String] as? Double ?? 1) > 0,
                   let frame = bounds(w), frame.width >= 100, frame.height >= 60,
                   NSRunningApplication(processIdentifier: pid)?.activationPolicy == .regular else { return nil }
-            return MacWindow(id: id, pid: pid, app: w[kCGWindowOwnerName as String] as? String ?? "",
-                             title: w[kCGWindowName as String] as? String ?? "", frame: frame)
+            var m = MacWindow(id: id, pid: pid, app: w[kCGWindowOwnerName as String] as? String ?? "",
+                              title: w[kCGWindowName as String] as? String ?? "", frame: frame)
+            m.onScreen = w[kCGWindowIsOnscreen as String] as? Bool ?? false
+            return m
         }
     }
 
@@ -174,6 +188,7 @@ enum AXWindow {
     /// Brings the window to the front and gives its app the keyboard.
     static func raise(_ w: AXUIElement, pid: pid_t) {
         NSRunningApplication(processIdentifier: pid)?.activate()
+        AXUIElementSetAttributeValue(w, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
         AXUIElementPerformAction(w, kAXRaiseAction as CFString)
         AXUIElementSetAttributeValue(w, kAXMainAttribute as CFString, kCFBooleanTrue)
     }

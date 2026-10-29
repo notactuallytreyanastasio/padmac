@@ -94,10 +94,21 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         encoder.onFrame = out.frame
         self.encoder = encoder
 
-        let stream = SCStream(filter: filter, configuration: config, delegate: self)
+        var stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         if audio { try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue) }
-        try await stream.startCapture()
+        do {
+            try await stream.startCapture()
+        } catch where audio {
+            // With no audio source to capture (the output device gone or
+            // switching), the whole stream refuses to start. Video matters
+            // more than sound: start again without it.
+            NSLog("RemoteMac: capture with audio failed (\(error)); streaming without audio")
+            config.capturesAudio = false
+            stream = SCStream(filter: filter, configuration: config, delegate: self)
+            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+            try await stream.startCapture()
+        }
         self.stream = stream
 
         let names = await MainActor.run { () -> [CGDirectDisplayID: String] in

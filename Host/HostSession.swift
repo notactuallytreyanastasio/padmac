@@ -285,7 +285,21 @@ final class HostSession {
         guard let id, var w = byID[id] else { return Picked(window: nil, ring: ring, windows: windows) }
 
         var original: (CGWindowID, pid_t, CGRect)?
-        if let el = AXWindow.element(pid: w.pid, id: id) {
+        var el = AXWindow.element(pid: w.pid, id: id)
+        if !w.onScreen {
+            // On another desktop (or minimized, or hidden): activating its app
+            // makes macOS switch to the desktop it is on, after which
+            // Accessibility can see it. The switch animates; wait it out.
+            await MainActor.run { _ = NSRunningApplication(processIdentifier: w.pid)?.activate() }
+            for _ in 0..<12 where el == nil || WindowList.frame(of: id) == nil {
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                el = AXWindow.element(pid: w.pid, id: id)
+            }
+            if let el { AXWindow.raise(el, pid: w.pid) }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            NSLog("RemoteMac: \(w.app) window \(id) was off this desktop; now on screen: \(WindowList.frame(of: id) != nil)")
+        }
+        if let el {
             if resize {
                 AXWindow.raise(el, pid: w.pid)
                 let center = CGPoint(x: w.frame.midX, y: w.frame.midY)
