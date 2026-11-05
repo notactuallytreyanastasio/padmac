@@ -6,9 +6,12 @@ import CoreGraphics
 /// apps lay out normally: about 840 wide in portrait, which most apps accept
 /// as a minimum, and at least 600 tall. On an unfolded iPhone Duo in portrait
 /// that is 1.35 Mac points per iPhone point; folded, the cover screen needs
-/// about 1.8. Never fewer Mac points than iPhone points: blowing Mac text up
-/// past its real size only wastes the screen. `textScale` above 1 makes
-/// everything on the Mac bigger (fewer Mac points), below 1 smaller.
+/// about 1.8. By default never fewer Mac points than device points: blowing
+/// Mac text up past its real size only wastes the screen. `textScale` above 1
+/// makes everything on the Mac bigger (fewer Mac points), below 1 smaller.
+/// It applies after that floor, not before: an iPad already has more room
+/// than the target, so a scale inside the floor would be clamped away and the
+/// text size menu would do nothing there.
 enum WindowSizing {
     static let targetWidth: CGFloat = 840
     static let targetHeight: CGFloat = 600
@@ -16,8 +19,8 @@ enum WindowSizing {
 
     static func macPointsPerPoint(for space: CGSize, textScale: CGFloat = 1) -> CGFloat {
         guard space.width > 0, space.height > 0 else { return 1 }
-        let fit = max(targetWidth / space.width, targetHeight / space.height) / max(textScale, 0.1)
-        return min(max(fit, 1), maxMacPointsPerPoint)
+        let fit = max(targetWidth / space.width, targetHeight / space.height)
+        return min(max(fit, 1) / max(textScale, 0.1), maxMacPointsPerPoint)
     }
 
     static func request(for space: CGSize, textScale: CGFloat = 1) -> WindowRequest? {
@@ -55,6 +58,7 @@ enum DeviceKind: Equatable {
     /// Any iPhone, iPhone Duo folded or open included.
     case phone
 
-    /// Whole display on an iPad, one window anywhere smaller.
+    /// Whole display on an iPad, one window anywhere smaller. Only the default:
+    /// an iPad gets window mode from the Windows button, and remembers it.
     var prefersWindowMode: Bool { self != .pad }
 }

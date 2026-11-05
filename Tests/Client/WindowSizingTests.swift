@@ -21,6 +21,15 @@ final class WindowSizingTests: XCTestCase {
         XCTAssertEqual(r, WindowRequest(width: 1024, height: 1300))
     }
 
+    func testTextSizeWorksOnAScreenBiggerThanTheTarget() {
+        // A 13-inch iPad in landscape, under the toolbar: the default is already 1 Mac point per point.
+        let space = CGSize(width: 1376, height: 940)
+        let normal = WindowSizing.request(for: space)!
+        XCTAssertEqual(normal, WindowRequest(width: 1376, height: 940))
+        XCTAssertEqual(WindowSizing.request(for: space, textScale: 1.25), WindowRequest(width: 1101, height: 752))
+        XCTAssertEqual(WindowSizing.request(for: space, textScale: 0.8), WindowRequest(width: 1720, height: 1175))
+    }
+
     func testUnfoldingMakesTheTextBigger() {
         let folded = WindowSizing.macPointsPerPoint(for: CGSize(width: 440, height: 660))
         let open = WindowSizing.macPointsPerPoint(for: CGSize(width: 620, height: 860))

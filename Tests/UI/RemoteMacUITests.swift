@@ -305,7 +305,9 @@ final class WindowModeUITests: RemoteMacUITests {
         let kbTop = (keyboard.frame.minY - screen.frame.minY) / screen.frame.height
         let after = content
         XCTAssertLessThanOrEqual(after.maxY, kbTop + 0.001, "picture \(after) runs under the keyboard (top at \(kbTop))")
-        XCTAssertLessThan(after.height, before.height)
+        // The bottom edge, not the height: the dry-run host streams whatever Mac window is in front, and
+        // a wide one is limited by the screen's width, so a shorter space moves it up without shrinking it.
+        XCTAssertLessThan(after.maxY, before.maxY, "picture \(before) did not move up: \(after)")
     }
 
     func testStreamsOneWindowAndTheToolbarListsThem() {
@@ -315,6 +317,12 @@ final class WindowModeUITests: RemoteMacUITests {
         app.buttons["Show whole display"].tap()
         let off = NSPredicate(format: "value CONTAINS 'window=off'")
         XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: off, evaluatedWith: screen)], timeout: 5), .completed)
+        // And back: how an iPad, which starts on the whole display, gets here.
+        app.buttons["Windows"].tap()
+        XCTAssertTrue(app.buttons["Show one window"].waitForExistence(timeout: 3))
+        app.buttons["Show one window"].tap()
+        let on = NSPredicate(format: "value CONTAINS 'window=on'")
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation(for: on, evaluatedWith: screen)], timeout: 5), .completed)
     }
 }
 

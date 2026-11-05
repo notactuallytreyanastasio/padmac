@@ -54,14 +54,13 @@ below). Your settings survive the reinstall.
 
 - **A Mac running macOS 14 (Sonoma) or newer.** To check: Apple menu  ›
   About This Mac.
-- **An iPad or iPhone running iOS / iPadOS 27.0 or newer, or an iPhone Duo.**
-  To check: Settings › General › About. A device still on iOS 26 has to be
-  updated first: the app won't install on it. There are two apps from the same code:
-  **Remote Mac** for iPad and iPhone (iOS 27.0), and **Remote Mac Duo** for
+- **An iPad or iPhone running iOS / iPadOS 26.0 or newer, or an iPhone Duo.**
+  To check: Settings › General › About. There are two apps from the same code:
+  **Remote Mac** for iPad and iPhone (iOS 26.0), and **Remote Mac Duo** for
   iPhone Duo (iOS 27.1, which only the Duo runs). Both are built with the iOS
   27.1 SDK, so the Mac that builds them needs **Xcode 27.1, which needs macOS
-  Tahoe 26.6 or newer**. On an iPad you get the whole Mac display; on a phone,
-  one Mac window at a time ([Window mode](#window-mode-iphone-and-iphone-duo)).
+  Tahoe 26.6 or newer**. An iPad starts on the whole Mac display and can switch
+  to one Mac window at a time; a phone starts there ([Window mode](#window-mode-iphone-and-iphone-duo)).
   An iPad with an M-series chip works best. See
   [What does not work](#what-does-not-work--not-done) for older iPads.
 - **A USB cable** that connects the iPad to the Mac. You need it once per week
@@ -595,6 +594,11 @@ window is never made larger than the Mac's own screen; a tall phone shape is
 scaled down to fit, keeping its shape. **Larger** and **Smaller** under Mac
 text size trade room for legibility.
 
+On an iPad it is the same mode, off until you turn it on: **Windows** in the
+toolbar, then **Show one window**. The iPad remembers. A 13-inch iPad already
+has more room than that target, so the window is one Mac point per iPad point
+(1376 wide in landscape, less the toolbar), and Mac text size scales from there.
+
 Half open, like a small laptop, the fold is in the way, so the Mac window
 takes the half above it and the half below is the trackpad. With the fold
 upright, the window takes the left half. This uses iOS 27.1's hinge and
@@ -651,13 +655,13 @@ at 27.0. So `project.yml` builds the `Client` sources twice from one template
 
 | Target | Deployment | Devices | Bundle ID |
 |---|---|---|---|
-| `RemoteMac` | iOS 27.0 | iPad and iPhone | `com.bgrayson.remotemac.ipad` |
+| `RemoteMac` | iOS 26.0 | iPad and iPhone | `com.bgrayson.remotemac.ipad` |
 | `RemoteMacDuo` | iOS 27.1 | iPhone (`TARGETED_DEVICE_FAMILY 1`) | `com.bgrayson.remotemac.duo` |
 
 `RemoteMacDuo` adds the `DUO` compilation condition. Code under `#if DUO` uses
 the 27.1 hinge and fold APIs (`UIHingeInteraction`,
 `reservedRegions(kind: .division)`) and makes direct touch the default; the
-27.0 app contains none of it.
+26.0 app contains none of it.
 
 ### Installing with Xcode instead
 
@@ -685,7 +689,7 @@ What runs:
 | Layer | Where | What it proves |
 |---|---|---|
 | `RemoteMacTests` (78) | macOS | Wire format round-trips and rejects malformed input. Framing over a real TLS-PSK socket: 5 MB messages, wrong code rejected, unknown or oversized messages hang up, video backpressure. HEVC at 5120×1440 and H.264 encoded and decoded through the real pipeline. Input logic: double-click counting, ⌘ flags on ⌘C, key repeat, text chunking, the lost-delta bug. The iPad key map checked against macOS's real US layout. Clipboard: text and images sent once, concealed items kept on the Mac, no echo, the Universal Clipboard bounce. The host server in dry-run mode, and the display staying awake only while an iPad is connected. Window mode: the swipe order survives raising a window (which reorders the z-order), and a window is placed on the Mac's screen keeping the phone's shape, on a second display too. |
-| `RemoteMacClientTests` (53) | iPad simulator | Zoom/pan geometry (no gaps, the pinch anchor stays put, follow-the-cursor, a window centred in the safe area, not the whole view), three-finger swipe axis locking, pointer acceleration, the ⌥Tab / ⌥Space remapping, the audio buffer, the rate meter. Window sizing: the Mac window size for a folded and an unfolded phone, the fold giving the window the top or left half, the keyboard pushing it up, and when a window swipe commits. |
+| `RemoteMacClientTests` (54) | iPad simulator | Zoom/pan geometry (no gaps, the pinch anchor stays put, follow-the-cursor, a window centred in the safe area, not the whole view), three-finger swipe axis locking, pointer acceleration, the ⌥Tab / ⌥Space remapping, the audio buffer, the rate meter. Window sizing: the Mac window size for a folded and an unfolded phone, the fold giving the window the top or left half, the keyboard pushing it up, and when a window swipe commits. |
 | `RemoteMacUITests` (30) | iPad simulator (iOS 27.0) | The real app, with real taps, drags, pinches and keyboard keys, against a real host in `-dryRunInput -dryRunWindows` mode. Assertions are on the input the host received. 14 tests run twice, on the whole display and again in window mode (`WindowModeUITests`), which adds two of its own: the window list, and the picture staying above the keyboard. |
 | `RemoteMacDuoUITests` (30) | iPhone Duo simulator (iOS 27.1) | The same tests against the Duo app. |
 | `probe` | macOS | Real screen capture → HEVC → TLS → decode, a stream restart, a quality switch, and median capture-to-decode latency under 50 ms (this Mac, on macOS 27.2: 18.5 ms). |
@@ -747,8 +751,6 @@ focused text area), and `-zoomFill YES` starts zoomed.
   a finger the moment it touches, and two-finger scrolling (in direct mode it
   first moves the cursor between your fingers). XCUITest can't drag with two
   fingers.
-- **Neither app runs on iOS 26.** The iPad and iPhone builds need iOS 27.0,
-  so a device on 26.6.1 has to update before it can install them.
 - **Switching to a second display is untested.** The dev Mac had its lid
   closed, so only one display was active. Re-selecting the same display (the
   path a resolution change also takes) is tested.

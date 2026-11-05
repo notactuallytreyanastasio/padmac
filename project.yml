@@ -3,7 +3,7 @@ options:
   bundleIdPrefix: com.bgrayson.remotemac
   deploymentTarget:
     macOS: "14.0"
-    iOS: "27.0"
+    iOS: "26.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -56,7 +56,8 @@ targets:
         CODE_SIGN_IDENTITY: Apple Development
     scheme:
       testTargets: [RemoteMacTests]
-  # iPad, and iPhones other than the Duo: iOS 27.0.
+  # iPad, and iPhones other than the Duo: iOS 26.0, built with the same current SDK.
+  # Nothing here needs 27, and an iPad on 26.x cannot install anything higher.
   RemoteMac:
     templates: [ClientApp]
     info:
