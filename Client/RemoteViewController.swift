@@ -33,6 +33,8 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     private let video = VideoView()
     private let keys = KeyboardInputView()
     private let toolbar = UIStackView()
+    /// esc, ⌃ and ⌘ held down for as long as a finger is on them, above the toolbar.
+    private let heldKeys = UIStackView()
     /// `-touchMode trackpad|direct` overrides the default, for UI tests.
     private var mode: TouchMode = switch UserDefaults.standard.string(forKey: "touchMode") {
     case "trackpad": .trackpad
@@ -221,6 +223,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         // The on-screen keyboard (accessory row included); a hardware keyboard's shortcut strip doesn't count.
         if keys.softKeyboard && k.height > 0 { b = k.minY }
         if toolbar.frame.height > 0 { b = min(b ?? .infinity, toolbar.frame.minY - 4) }
+        if heldKeys.frame.height > 0 { b = min(b ?? .infinity, heldKeys.frame.minY - 4) }
         return b
     }
 
@@ -326,8 +329,9 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
     // gesture has recognized, so it is already there when the finger moves.
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         stopMomentum()
-        if mode == .direct, let t = touches.first, t.type == .direct, event?.allTouches?.count == 1,
-           !(t.view?.isDescendant(of: toolbar) ?? false) {
+        // A thumb holding ⌘ is not a second finger on the picture.
+        let onPicture = event?.allTouches?.filter { !isControl($0.view) } ?? []
+        if mode == .direct, let t = touches.first, t.type == .direct, onPicture.count == 1, !isControl(t.view) {
             touching = true
             let (x, y) = normalized(t.location(in: video))
             session.send(.moveTo(x: x, y: y))
@@ -560,7 +564,11 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         // Toolbar buttons must not also click on the Mac.
-        !(touch.view?.isDescendant(of: toolbar) ?? false)
+        !isControl(touch.view)
+    }
+
+    private func isControl(_ v: UIView?) -> Bool {
+        v?.isDescendant(of: toolbar) == true || v?.isDescendant(of: heldKeys) == true
     }
 
     // MARK: Zoom
@@ -989,6 +997,41 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         _ = button("xmark", "Disconnect") { [weak self] _ in
             self?.session.stop()
             self?.onClose?()
+        }
+        installHeldKeys()
+    }
+
+    /// Their own row: in the toolbar they made it wider than a folded Duo.
+    /// Down on touch, up on lift, so ⌘ can be held with a thumb while the
+    /// other hand clicks or drags, or esc held for as long as an app wants it.
+    private func installHeldKeys() {
+        heldKeys.axis = .horizontal
+        heldKeys.spacing = 4
+        heldKeys.translatesAutoresizingMaskIntoConstraints = false
+        heldKeys.backgroundColor = toolbar.backgroundColor
+        heldKeys.layer.cornerRadius = 18
+        heldKeys.isLayoutMarginsRelativeArrangement = true
+        heldKeys.directionalLayoutMargins = toolbar.directionalLayoutMargins
+        view.addSubview(heldKeys)
+        NSLayoutConstraint.activate([
+            heldKeys.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor),
+            heldKeys.bottomAnchor.constraint(equalTo: toolbar.topAnchor, constant: -6),
+        ])
+        for (title, label, code) in [("esc", "Escape", UInt16(53)), ("⌃", "Control", 59), ("⌘", "Command", 55)] {
+            var c = UIButton.Configuration.plain()
+            c.title = title
+            c.baseForegroundColor = .white
+            c.contentInsets = .init(top: 8, leading: 10, bottom: 8, trailing: 10)
+            let b = UIButton(configuration: c)
+            b.accessibilityLabel = "Hold \(label)"
+            b.configurationUpdateHandler = { b in
+                b.configuration?.background.backgroundColor = b.isHighlighted ? .white.withAlphaComponent(0.35) : .clear
+                b.configuration?.background.cornerRadius = 14
+            }
+            b.addAction(UIAction { [weak self] _ in self?.session.send(.key(code: code, down: true)) }, for: .touchDown)
+            b.addAction(UIAction { [weak self] _ in self?.session.send(.key(code: code, down: false)) },
+                        for: [.touchUpInside, .touchUpOutside, .touchCancel])
+            heldKeys.addArrangedSubview(b)
         }
     }
 
