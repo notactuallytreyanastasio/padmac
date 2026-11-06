@@ -113,6 +113,12 @@ final class WireTests: XCTestCase {
         XCTAssertEqual(e, .scroll(dx: 1, dy: 2, phase: nil, momentum: nil))
     }
 
+    func testFitDisplayKeepsToWhatTheVirtualDisplayAllows() {
+        XCTAssertEqual(FitDisplay(width: 1376, height: 1032).clamped, FitDisplay(width: 1376, height: 1032))
+        XCTAssertEqual(FitDisplay(width: 701, height: 503).clamped, FitDisplay(width: 700, height: 502), "encoders need even sizes")
+        XCTAssertEqual(FitDisplay(width: 1, height: 99999).clamped, FitDisplay(width: 320, height: 2048))
+    }
+
     func testHelloFromOlderClientDecodes() throws {
         // Fields added later must be optional or older clients can't connect.
         let json = #"{"clientName":"old","maxWidth":1920,"maxHeight":1080}"#

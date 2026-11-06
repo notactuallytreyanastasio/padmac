@@ -36,6 +36,10 @@ final class HostSession {
     private let dryRunWindows = UserDefaults.standard.bool(forKey: "dryRunWindows")
     private var focusTimer: DispatchSourceTimer?
     private var lastTextFocus: Bool?
+    /// The virtual display this session streams, if it asked for one.
+    private var fitDisplayID: CGDirectDisplayID?
+    /// The cursor may be on another display when a virtual one is first shown.
+    private var bringCursorToFit = false
 
     var onStatus: ((String) -> Void)?
     var onEnd: ((HostSession, Error?) -> Void)?
@@ -102,7 +106,9 @@ final class HostSession {
         injector.releaseAll()
         restoreWindows()
         let clipboard = self.clipboard, observer = screenObserver
+        let session = ObjectIdentifier(self)
         DispatchQueue.main.async {
+            FitDisplayKeeper.shared.release(for: session, after: FitDisplayKeeper.grace)
             clipboard?.stop()
             if let observer { NotificationCenter.default.removeObserver(observer) }
         }
@@ -117,7 +123,7 @@ final class HostSession {
             quality = h.quality ?? .full
             windowRequest = h.window
             onStatus?("Connected: \(h.clientName)")
-            startStream(on: h.displayID)
+            startStream(on: h.window == nil ? h.fit.flatMap(fit) ?? h.displayID : h.displayID)
             startCursorReports()
             startWindowWatch()
             startFocusWatch()
@@ -131,7 +137,18 @@ final class HostSession {
             streamer?.requestKeyframe()
         case .selectDisplay:
             guard let s = try? decoder.decode(SelectDisplay.self, from: payload) else { return fail(.badPayload(type)) }
+            if s.displayID != fitDisplayID, fitDisplayID != nil {
+                // Asked for by hand, so there's no reconnect to wait for.
+                fitDisplayID = nil
+                let session = ObjectIdentifier(self)
+                DispatchQueue.main.async { FitDisplayKeeper.shared.release(for: session, after: 0) }
+            }
             startStream(on: s.displayID)
+        case .fitDisplay:
+            guard let f = try? decoder.decode(FitDisplay.self, from: payload) else { return fail(.badPayload(type)) }
+            guard windowRequest == nil else { return } // window mode already has the iPad's shape
+            // A resize of the display already showing restarts through watchDisplayChanges.
+            if let id = fit(f), id != streamer?.displayID { startStream(on: id) }
         case .setQuality:
             guard let q = try? decoder.decode(StreamQuality.self, from: payload) else { return fail(.badPayload(type)) }
             guard q != quality else { return }
@@ -163,6 +180,15 @@ final class HostSession {
         case .screenInfo, .videoFormat, .videoFrame, .error, .cursor, .audio, .textFocus:
             fail(.badPayload(type))
         }
+    }
+
+    /// Makes or resizes the virtual display. Nil if this Mac can't.
+    private func fit(_ size: FitDisplay) -> CGDirectDisplayID? {
+        let session = ObjectIdentifier(self)
+        let id = DispatchQueue.main.sync { FitDisplayKeeper.shared.acquire(size.clamped, for: session) }
+        bringCursorToFit = fitDisplayID != id
+        fitDisplayID = id
+        return id
     }
 
     private func fail(_ error: ProtocolError) {
@@ -212,6 +238,11 @@ final class HostSession {
                         info.windows = chosen.windows
                     }
                     self.lastCursor = nil
+                    if self.bringCursorToFit, streamer.displayID == self.fitDisplayID {
+                        self.bringCursorToFit = false
+                        let at = CGEvent(source: nil)?.location ?? .zero
+                        if !CGDisplayBounds(streamer.displayID).contains(at) { self.injector.handle(.moveTo(x: 0.5, y: 0.5)) }
+                    }
                     conn.send(.screenInfo, json: info)
                     streamer.requestKeyframe()
                 }

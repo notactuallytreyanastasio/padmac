@@ -46,7 +46,15 @@ final class ScreenStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
     /// its frame. Including the app rather than the one window keeps its menus,
     /// popovers and sheets, which are separate windows, in the picture.
     func start(displayID wanted: CGDirectDisplayID?, window: MacWindow? = nil, maxWidth: Int, maxHeight: Int, codecs: [VideoCodec], audio: Bool = false, quality: StreamQuality = .full) async throws -> ScreenInfo {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        var content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        // A display made a moment ago takes a while to reach ScreenCaptureKit, and
+        // may not even be online yet. Giving up early would stream the wrong display.
+        if let wanted {
+            for _ in 0..<30 where !content.displays.contains(where: { $0.displayID == wanted }) {
+                try await Task.sleep(nanoseconds: 100_000_000)
+                content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            }
+        }
         let preferred = window.flatMap { w in content.displays.first { $0.frame.contains(CGPoint(x: w.frame.midX, y: w.frame.midY)) } }
             ?? content.displays.first(where: { $0.displayID == (wanted ?? CGMainDisplayID()) })
         guard let display = preferred ?? content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else {

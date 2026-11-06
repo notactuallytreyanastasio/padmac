@@ -9,6 +9,8 @@ enum Wire {
     static let port: UInt16 = 47428
     static let headerSize = 5
     static let maxPayload = 32 << 20
+    /// What the Mac calls the display it makes for the iPad.
+    static let fitDisplayName = "Remote Mac iPad"
 }
 
 enum MessageType: UInt8 {
@@ -48,6 +50,8 @@ enum MessageType: UInt8 {
     case setWindowMode = 0x16
     /// JSON `SwitchWindow`. Window mode only.
     case switchWindow = 0x17
+    /// JSON `FitDisplay`. The host streams a virtual display of that size, making or resizing it.
+    case fitDisplay = 0x18
 }
 
 enum VideoCodec: String, Codable {
@@ -124,6 +128,22 @@ struct Hello: Codable {
     var quality: StreamQuality?
     /// Present: window mode, starting with the frontmost window at this size.
     var window: WindowRequest? = nil
+    /// Start on a virtual display of this size, instead of `displayID`.
+    var fit: FitDisplay? = nil
+}
+
+/// The iPad window's size in points, which is the size the Mac display takes.
+struct FitDisplay: Codable, Equatable {
+    static let minPoints = 320, maxPoints = 2048
+
+    var width: Int
+    var height: Int
+
+    /// In range, and even, as encoders need.
+    var clamped: FitDisplay {
+        func fix(_ v: Int) -> Int { min(max(v, Self.minPoints), Self.maxPoints) & ~1 }
+        return FitDisplay(width: fix(width), height: fix(height))
+    }
 }
 
 struct SelectDisplay: Codable {

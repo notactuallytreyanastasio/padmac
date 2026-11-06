@@ -186,6 +186,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         viewport.content = videoRect
         viewport.area = contentSpace
         video.contentRect = videoRect
+        session.windowResized(view.bounds.size)
         viewport.set(zoom: viewport.zoom, offset: viewport.offset) // re-clamp after rotation
         applyZoom()
         updateWindowRequest()
@@ -1037,9 +1038,14 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
 
     private func updateDisplayMenu() {
         guard let info = session.screen else { return }
-        displayButton.isHidden = info.displays.count < 2 || windowMode
-        displayButton.menu = UIMenu(title: "Show display", children: info.displays.map { d in
-            UIAction(title: d.name, subtitle: "\(Int(d.width)) × \(Int(d.height))", state: d.id == info.displayID ? .on : .off) { [weak self] _ in
+        displayButton.isHidden = windowMode
+        let fit = UIAction(title: "Fill this iPad", subtitle: "An extra Mac display, shaped like this window",
+                           state: session.fitEnabled ? .on : .off) { [weak self] _ in self?.session.setFit(true) }
+        let real = info.displays.filter { $0.name != Wire.fitDisplayName }
+        displayButton.menu = UIMenu(title: "Show display", children: [fit] + real.map { d in
+            UIAction(title: d.name, subtitle: "\(Int(d.width)) × \(Int(d.height))",
+                     state: !session.fitEnabled && d.id == info.displayID ? .on : .off) { [weak self] _ in
+                self?.session.setFit(false)
                 self?.session.selectDisplay(d.id)
             }
         })

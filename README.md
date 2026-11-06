@@ -511,6 +511,18 @@ useful zoom for an ultrawide. When filling would barely magnify (under 1.5×,
 as with a window already in the phone's shape), it zooms 2× instead. A display button appears when the Mac has more
 than one active display.
 
+Filling the iPad: the Mac's display rarely has the iPad's shape, so it's
+letterboxed. The display button's **Fill this iPad** makes an extra Mac display
+shaped exactly like the app's window, at Retina resolution, and shows that
+instead. It follows rotation and window resizing, and the choice is remembered.
+It's an extra monitor: the Mac's own display stays as it was. The current
+desktop's windows come over when it starts, cut down to fit, and go back where
+they were when it ends. Pick a real display in the same menu to turn it off. If
+the connection drops, it stays for 60 seconds so windows don't jump back. It uses
+macOS's private `CGVirtualDisplay`.
+
+Remote Mac also runs in a resizable window alongside other iPad apps.
+
 Sound: the Mac's audio plays on the iPad (16-bit 48 kHz stereo, about 1.5
 Mbit/s, ~60 ms behind). The speaker button turns it off, and the choice is
 remembered. The Mac keeps playing through its own speakers too.

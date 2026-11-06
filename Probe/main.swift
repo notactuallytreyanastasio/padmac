@@ -15,7 +15,7 @@ import VideoToolbox
 // the checks read the real cursor and pasteboard back.
 
 let args = CommandLine.arguments
-guard args.count >= 3 else { print("usage: probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys] [--quality] [--window]"); exit(2) }
+guard args.count >= 3 else { print("usage: probe <host[:port]> <code> [out.png] [--h264] [--move] [--displays] [--clipboard] [--swipe] [--audio] [--keys] [--quality] [--window] [--fit]"); exit(2) }
 let hostPort = args[1].split(separator: ":")
 let host = String(hostPort[0]), port = hostPort.count > 1 ? UInt16(hostPort[1])! : Wire.port
 let code = args[2]
@@ -34,6 +34,7 @@ var infos: [ScreenInfo] = []
 var start = Date()
 var wrote = false
 var failures = 0
+let mainDisplaySize = CGDisplayBounds(CGMainDisplayID()).size
 var clipboardReceived: [String] = []
 var latencies: [Double] = []
 var audioFrames = 0, audioPeak: Int16 = 0, audioLatency: [Double] = []
@@ -90,7 +91,14 @@ func runSwipeChecks(_ info: ScreenInfo) {
             after(Double(i) * 0.012) { conn.send(.input, json: InputEvent.swipe(axis: .horizontal, phase: .changed, distance: d * Double(i) * 0.05)) }
         }
         after(0.3) { conn.send(.input, json: InputEvent.swipe(axis: .horizontal, phase: .ended, distance: d)) }
-        after(1.4, then)
+        // How long the Space takes to change varies, so watch for it rather than read once.
+        let from = Spaces.activeIndex(on: display)
+        func poll(_ left: Int) {
+            if Spaces.activeIndex(on: display) != from { return after(0.8, then) }
+            if left == 0 { return then() }
+            after(0.1) { poll(left - 1) }
+        }
+        after(0.4) { poll(30) }
     }
     swipe(toward) {
         let moved = Spaces.activeIndex(on: display)
@@ -98,6 +106,34 @@ func runSwipeChecks(_ info: ScreenInfo) {
         swipe(-toward) {
             let back = Spaces.activeIndex(on: display)
             check(back == start, "swipe back returned to desktop \(start): at \(back.map(String.init) ?? "?")")
+            runMissionControlChecks()
+        }
+    }
+}
+
+/// Swipes up and back down. The Dock's on-screen window count changes while Mission
+/// Control is open (on macOS 27.2 it drops from 1 to 0), which shows the gesture
+/// landed and was undone, but not which view opened.
+func runMissionControlChecks() {
+    func dockWindows() -> Int {
+        let all = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+        return all.filter { $0[kCGWindowOwnerName as String] as? String == "Dock" }.count
+    }
+    func swipe(_ d: Double, then: @escaping () -> Void) {
+        conn.send(.input, json: InputEvent.swipe(axis: .vertical, phase: .began, distance: d * 0.05))
+        for i in 2...20 {
+            after(Double(i) * 0.012) { conn.send(.input, json: InputEvent.swipe(axis: .vertical, phase: .changed, distance: d * Double(i) * 0.05)) }
+        }
+        after(0.3) { conn.send(.input, json: InputEvent.swipe(axis: .vertical, phase: .ended, distance: d)) }
+        after(1.5, then)
+    }
+    let closed = dockWindows()
+    swipe(-1) {
+        let open = dockWindows()
+        check(open != closed, "swipe up changed the Dock: \(closed) -> \(open) windows")
+        swipe(1) {
+            let after = dockWindows()
+            check(after == closed, "swipe down restored the Dock: \(open) -> \(after) windows")
         }
     }
 }
@@ -308,7 +344,8 @@ conn.onReady = {
                                   codecs: flags.contains("--h264") ? [.h264] : [.hevc, .h264],
                                   audio: flags.contains("--audio"),
                                   quality: flags.contains("--quality") ? .saver : nil,
-                                  window: flags.contains("--window") || flags.contains("--window-resize") ? windowAsk : nil))
+                                  window: flags.contains("--window") || flags.contains("--window-resize") ? windowAsk : nil,
+                                  fit: flags.contains("--fit") ? FitDisplay(width: 1376, height: 1032) : nil))
 }
 conn.onClose = { error in
     print("closed: \(error.map { "\($0)" } ?? "clean")")
@@ -324,12 +361,37 @@ conn.onMessage = { type, payload in
         print("screenInfo \(info.displayName) \(info.codec) stream \(info.streamWidth)x\(info.streamHeight) screen \(info.screenWidth)x\(info.screenHeight) of \(info.displays.map(\.name))")
         if infos.count == 1 {
             start = Date()
-            if flags.contains("--move") { runMoveChecks(info) }
+            // After the virtual display's mode restore, which rearranges the displays.
+            if flags.contains("--move") { after(flags.contains("--fit") ? 2 : 0) { runMoveChecks(info) } }
             if flags.contains("--clipboard") { after(2.5, runClipboardChecks) }
             if flags.contains("--swipe") { after(0.5) { runSwipeChecks(info) } }
             if flags.contains("--keys") { after(0.5, runKeyChecks) }
             if flags.contains("--window") { after(0.8) { runWindowChecks(info) } }
             if flags.contains("--window-resize") { after(0.8) { runResizeChecks(info) } }
+            if flags.contains("--fit") {
+                check(info.displayName == Wire.fitDisplayName, "fit: streams the virtual display: \(info.displayName)")
+                check(info.screenWidth == 1376 && info.screenHeight == 1032, "fit: display is the iPad's size: \(info.screenWidth)x\(info.screenHeight)")
+                check(info.streamWidth == 2752 && info.streamHeight == 2064, "fit: stream is Retina: \(info.streamWidth)x\(info.streamHeight)")
+                after(1.5) {
+                    let now = CGDisplayBounds(CGMainDisplayID()).size
+                    check(now == mainDisplaySize, "fit: leaves the Mac's own display alone: \(mainDisplaySize) -> \(now)")
+                }
+                after(3.5) {
+                    let all = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+                    let here = all.filter { w in
+                        guard w[kCGWindowLayer as String] as? Int == 0, let b = w[kCGWindowBounds as String] as? NSDictionary,
+                              let r = CGRect(dictionaryRepresentation: b as CFDictionary) else { return false }
+                        return CGDisplayBounds(info.displayID).intersects(r)
+                    }
+                    check(!here.isEmpty, "fit: windows came over: \(here.compactMap { $0[kCGWindowOwnerName as String] as? String })")
+                    conn.send(.fitDisplay, json: FitDisplay(width: 1032, height: 1376))
+                }
+                after(7.5) {
+                    let last = infos.last!
+                    check(last.displayName == Wire.fitDisplayName && last.screenWidth == 1032 && last.screenHeight == 1376,
+                          "fit: follows rotation: \(last.displayName) \(last.screenWidth)x\(last.screenHeight), stream \(last.streamWidth)x\(last.streamHeight)")
+                }
+            }
             if flags.contains("--quality") {
                 check(info.streamWidth <= 1920, "data saver streams at most 1920 wide: \(info.streamWidth)x\(info.streamHeight)")
                 let startBytes = bytes
@@ -439,7 +501,7 @@ if flags.contains("--focus") {
     after(1.5) { check(textFocusReports.last == true, "host reports keyboard focus in a text input: \(textFocusReports)") }
 }
 
-let duration = flags.contains("--window-resize") ? 6.0 : flags.contains("--window") ? 6.5 : flags.contains("--clipboard") || flags.contains("--quality") ? 8.5 : flags.contains("--keys") ? 8.5 : flags.contains("--swipe") || flags.contains("--audio") ? 6.5 : 4.5
+let duration = flags.contains("--window-resize") ? 6.0 : flags.contains("--window") ? 6.5 : flags.contains("--clipboard") || flags.contains("--quality") ? 8.5 : flags.contains("--keys") ? 8.5 : flags.contains("--swipe") ? 14 : flags.contains("--fit") ? 9 : flags.contains("--audio") ? 6.5 : 4.5
 DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
     let secs = Date().timeIntervalSince(start)
     print(String(format: "%d frames (%d key), %d decoded, %.1f KB avg, %.2f Mbit/s over %.1fs, %d cursor reports",

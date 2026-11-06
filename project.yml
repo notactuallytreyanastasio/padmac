@@ -23,7 +23,6 @@ targetTemplates:
     info:
       properties:
         UILaunchScreen: {}
-        UIRequiresFullScreen: true
         UIStatusBarHidden: true
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationLandscapeLeft

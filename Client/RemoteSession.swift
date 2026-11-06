@@ -58,6 +58,10 @@ final class RemoteSession: ObservableObject {
     }
     private var _windowRequest: WindowRequest?
     private let windowLock = NSLock()
+    /// Show a virtual Mac display shaped like this window. Remembered between launches.
+    @Published private(set) var fitEnabled = UserDefaults.standard.bool(forKey: "fitDisplay")
+    private var windowSize: FitDisplay?
+    private var resizeSend: DispatchWorkItem?
     private let meterLock = NSLock()
     private var videoMeter = RateMeter()
     private var totalMeter = RateMeter()
@@ -113,6 +117,25 @@ final class RemoteSession: ObservableObject {
         conn?.send(.switchWindow, json: SwitchWindow(windowID: id))
     }
 
+    func setFit(_ on: Bool) {
+        fitEnabled = on
+        UserDefaults.standard.set(on, forKey: "fitDisplay")
+        if on, let windowSize { conn?.send(.fitDisplay, json: windowSize) }
+    }
+
+    /// The window changed size or rotated. Dragging a window's edge calls this
+    /// constantly, and each size the Mac takes restarts the stream, so wait for it to settle.
+    func windowResized(_ size: CGSize) {
+        let fit = FitDisplay(width: Int(size.width), height: Int(size.height)).clamped
+        guard fit != windowSize else { return }
+        windowSize = fit
+        guard fitEnabled, windowRequest == nil else { return }
+        resizeSend?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.conn?.send(.fitDisplay, json: fit) }
+        resizeSend = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
     func setQuality(_ q: StreamQuality) {
         quality = q
         UserDefaults.standard.set(q.rawValue, forKey: "quality")
@@ -150,7 +173,8 @@ final class RemoteSession: ObservableObject {
         let hello = Hello(clientName: UIDevice.current.name,
                           maxWidth: min(8192, Int(max(native.width, native.height)) * 2),
                           maxHeight: min(8192, Int(min(native.width, native.height)) * 2),
-                          codecs: [.hevc, .h264], displayID: displayID, audio: audioEnabled, quality: quality)
+                          codecs: [.hevc, .h264], displayID: displayID, audio: audioEnabled, quality: quality,
+                          fit: fitEnabled && windowRequest == nil ? windowSize : nil)
         let c = FramedConnection(NWConnection(to: endpoint, using: PairingSecurity.parameters(code: code)), queue: queue)
         conn = c
         queue.async { self.hostError = nil }
@@ -237,7 +261,7 @@ final class RemoteSession: ObservableObject {
             player.enqueue(samples)
         case .error:
             hostError = String(decoding: payload, as: UTF8.self)
-        case .hello, .input, .requestKeyframe, .selectDisplay, .audioEnabled, .setQuality, .setWindowMode, .switchWindow:
+        case .hello, .input, .requestKeyframe, .selectDisplay, .audioEnabled, .setQuality, .setWindowMode, .switchWindow, .fitDisplay:
             fail(type)
         }
     }
