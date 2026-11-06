@@ -383,7 +383,8 @@ conn.onMessage = { type, payload in
                               let r = CGRect(dictionaryRepresentation: b as CFDictionary) else { return false }
                         return CGDisplayBounds(info.displayID).intersects(r)
                     }
-                    check(!here.isEmpty, "fit: windows came over: \(here.compactMap { $0[kCGWindowOwnerName as String] as? String })")
+                    // More than one can show up: macOS gives a returning display the windows it last had.
+                    check(!here.isEmpty, "fit: the display has a window on it: \(here.compactMap { $0[kCGWindowOwnerName as String] as? String })")
                     conn.send(.fitDisplay, json: FitDisplay(width: 1032, height: 1376))
                 }
                 after(7.5) {

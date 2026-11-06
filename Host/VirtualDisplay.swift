@@ -104,21 +104,21 @@ final class FitDisplayKeeper {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Self.restore(modes) }
         // A new display is empty, and the iPad can't see the others to drag anything over.
         if let id = display?.id {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.bringWindows(to: id) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.bringFrontWindow(to: id) }
         }
         return display?.id
     }
 
-    /// The current desktop's windows, cut down to fit where they must. Other
-    /// desktops' windows stay: Accessibility can't reach them.
-    private func bringWindows(to id: CGDirectDisplayID) {
+    /// The window in front, cut down to fit if it must be. Only that one: bringing
+    /// them all left the Mac's own screen empty and every window shrunk.
+    private func bringFrontWindow(to id: CGDirectDisplayID) {
         guard display?.id == id, !UserDefaults.standard.bool(forKey: "dryRunWindows") else { return }
         let bounds = CGDisplayBounds(id)
         let visible = MainActor.assumeIsolated { WindowList.visibleFrame(at: CGPoint(x: bounds.midX, y: bounds.midY)) } ?? bounds
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var done: [(id: CGWindowID, pid: pid_t, frame: CGRect)] = []
-            for w in WindowList.switchable() where w.onScreen && !bounds.intersects(w.frame) {
-                guard let el = AXWindow.element(pid: w.pid, id: w.id) else { continue }
+            if let w = WindowList.switchable().first(where: { $0.onScreen && !bounds.intersects($0.frame) }),
+               let el = AXWindow.element(pid: w.pid, id: w.id) {
                 let size = CGSize(width: min(w.frame.width, visible.width), height: min(w.frame.height, visible.height))
                 AXWindow.setFrame(el, WindowFit.place(size, from: visible, in: visible), pid: w.pid)
                 done.append((w.id, w.pid, w.frame))

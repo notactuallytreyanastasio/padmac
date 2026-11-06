@@ -186,7 +186,10 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         viewport.content = videoRect
         viewport.area = contentSpace
         video.contentRect = videoRect
-        session.windowResized(view.bounds.size)
+        // Half the panel's pixels, not the view's points: with Display Zoom a 2752-wide
+        // panel is 1600 points, and a Retina display that size is scaled down and smears text.
+        let scale = (view.window?.screen.nativeScale ?? 2) / 2
+        session.windowResized(CGSize(width: view.bounds.width * scale, height: view.bounds.height * scale))
         viewport.set(zoom: viewport.zoom, offset: viewport.offset) // re-clamp after rotation
         applyZoom()
         updateWindowRequest()
@@ -223,6 +226,8 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         let k = view.keyboardLayoutGuide.layoutFrame
         // The on-screen keyboard (accessory row included); a hardware keyboard's shortcut strip doesn't count.
         if keys.softKeyboard && k.height > 0 { b = k.minY }
+        // Fill's display has this window's exact shape; a strip for the toolbar would letterbox it.
+        if session.fitEnabled { return b }
         if toolbar.frame.height > 0 { b = min(b ?? .infinity, toolbar.frame.minY - 4) }
         if heldKeys.frame.height > 0 { b = min(b ?? .infinity, heldKeys.frame.minY - 4) }
         return b
@@ -1040,13 +1045,17 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         guard let info = session.screen else { return }
         displayButton.isHidden = windowMode
         let fit = UIAction(title: "Fill this iPad", subtitle: "An extra Mac display, shaped like this window",
-                           state: session.fitEnabled ? .on : .off) { [weak self] _ in self?.session.setFit(true) }
+                           state: session.fitEnabled ? .on : .off) { [weak self] _ in
+            self?.session.setFit(true)
+            self?.view.setNeedsLayout()
+        }
         let real = info.displays.filter { $0.name != Wire.fitDisplayName }
         displayButton.menu = UIMenu(title: "Show display", children: [fit] + real.map { d in
             UIAction(title: d.name, subtitle: "\(Int(d.width)) × \(Int(d.height))",
                      state: !session.fitEnabled && d.id == info.displayID ? .on : .off) { [weak self] _ in
                 self?.session.setFit(false)
                 self?.session.selectDisplay(d.id)
+                self?.view.setNeedsLayout()
             }
         })
     }
