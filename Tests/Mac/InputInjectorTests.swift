@@ -220,7 +220,34 @@ final class InputInjectorTests: XCTestCase {
         XCTAssertEqual(dock.map(\.offset), [0.125, 0.75, 0.75], "ended reports the last offset it moved to")
         XCTAssertEqual(dock.map(\.type), [1, 1, 1])
         XCTAssertTrue(events.isEmpty, "gestures go to the session tap, not the HID tap")
-        XCTAssertEqual(gestures.count, 6, "each step is a Dock event plus a gesture event")
+        if #available(macOS 27, *) {
+            XCTAssertEqual(gestures.count, 3, "macOS 27 takes the Dock event alone")
+        } else {
+            XCTAssertEqual(gestures.count, 6, "each step is a Dock event plus a gesture event")
+        }
+    }
+
+    func testOnMacOS27TheDockEventCarriesAnIOHIDEvent() throws {
+        guard #available(macOS 27, *) else { throw XCTSkip("macOS 27 only") }
+        typealias Copy = @convention(c) (CGEvent) -> Unmanaged<CFTypeRef>?
+        typealias Phase = @convention(c) (CFTypeRef) -> UInt32
+        typealias Integer = @convention(c) (CFTypeRef, UInt32) -> Int
+        typealias Double_ = @convention(c) (CFTypeRef, UInt32) -> Double
+        let sl = try XCTUnwrap(dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY))
+        let iokit = try XCTUnwrap(dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY))
+        let copy = unsafeBitCast(try XCTUnwrap(dlsym(sl, "SLEventCopyIOHIDEvent")), to: Copy.self)
+        let phase = unsafeBitCast(try XCTUnwrap(dlsym(iokit, "IOHIDEventGetPhase")), to: Phase.self)
+        let integer = unsafeBitCast(try XCTUnwrap(dlsym(iokit, "IOHIDEventGetIntegerValue")), to: Integer.self)
+        let double = unsafeBitCast(try XCTUnwrap(dlsym(iokit, "IOHIDEventGetDoubleValue")), to: Double_.self)
+
+        let events = DockSwipe.events(axis: .vertical, phase: .changed, offset: 0.75)
+        XCTAssertEqual(events.count, 1)
+        let hid = try XCTUnwrap(copy(events[0])?.takeRetainedValue())
+        let base: UInt32 = 23 << 16
+        XCTAssertEqual(phase(hid), 2)
+        XCTAssertEqual(integer(hid, base | 1), 2, "motion: vertical")
+        XCTAssertEqual(integer(hid, base | 5), 3, "flavor: Dock primary")
+        XCTAssertEqual(double(hid, base | 2), -0.75, "progress runs opposite to the old offset")
     }
 
     func testDockEventCarriesTheOffsetTwiceAndTheTypeAsAFloatBitPattern() {

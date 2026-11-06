@@ -8,15 +8,18 @@ import Foundation
 /// There is no public API for this. The event layout comes from Mac Mouse Fix
 /// (TouchSimulator.m) and was checked on macOS 26.2: an offset of +1.25 moved
 /// from desktop 1 to 2 of 5, -1.25 moved back; a vertical +1.0 opened Mission
-/// Control and -1.0 closed it. Mac Mouse Fix notes that macOS 27 ignores these
-/// fields and needs a private IOHIDEvent instead, which this does not do.
+/// Control and -1.0 closed it. macOS 27 ignores these fields and reads an
+/// IOHIDEvent attached to the event instead (Mac Mouse Fix f92d2d53a), so there
+/// the Dock event carries one of those too, and the gesture event is dropped.
+/// Its progress runs the opposite way to the old offset: on macOS 27.2 a positive
+/// value moved from desktop 2 of 3 to desktop 1.
 enum DockSwipe {
     enum Phase: Int {
         // IOHIDEventPhaseBits
         case began = 1, changed = 2, ended = 4, cancelled = 8
     }
 
-    /// The two events the Dock expects for one step of a swipe.
+    /// The events the Dock expects for one step of a swipe.
     static func events(axis: SwipeAxis, phase: Phase, offset: Double, exitSpeed: Double = 0) -> [CGEvent] {
         let type = axis == .horizontal ? 1.0 : 2.0
         guard let gesture = CGEvent(source: nil), let dock = CGEvent(source: nil) else { return [] }
@@ -44,6 +47,10 @@ enum DockSwipe {
             set(dock, 129, exitSpeed)
             set(dock, 130, exitSpeed)
         }
+        if #available(macOS 27, *),
+           DockSwipeHID.attach(to: dock, motion: Int(type), phase: phase, offset: offset, exitSpeed: exitSpeed) {
+            return [dock]
+        }
         return [dock, gesture]
     }
 
@@ -51,6 +58,54 @@ enum DockSwipe {
     /// (Mac Mouse Fix: 2 spaces -> 2.0, 5 -> 1.25).
     static func offsetPerSpace(spaces: Int) -> Double {
         spaces <= 1 ? 2 : 1 + 1 / Double(spaces - 1)
+    }
+}
+
+/// The IOHIDEvent macOS 27's Dock reads, built with private IOKit and SkyLight
+/// calls, looked up at runtime so a missing symbol is a nil, not a crash.
+enum DockSwipeHID {
+    private typealias Create = @convention(c) (CFAllocator?, UInt32, UInt64, UInt32) -> Unmanaged<CFTypeRef>?
+    private typealias SetInteger = @convention(c) (CFTypeRef, UInt32, Int) -> Void
+    private typealias SetDouble = @convention(c) (CFTypeRef, UInt32, Double) -> Void
+    private typealias Append = @convention(c) (CFTypeRef, CFTypeRef, UInt32) -> Void
+    // Copies the event's contents, so the caller keeps (and releases) its own reference.
+    private typealias Attach = @convention(c) (CGEvent, CFTypeRef) -> Void
+
+    // IOHIDEventTypes.h and IOHIDEventFieldDefs.h. A field is its event type << 16 | index.
+    private static let dockSwipeType: UInt32 = 23, velocityType: UInt32 = 9
+    private static let motion = dockSwipeType << 16 | 1, progress = dockSwipeType << 16 | 2, flavor = dockSwipeType << 16 | 5
+    private static let velocityX = velocityType << 16, velocityY = velocityType << 16 | 1
+    private static let flavorDockPrimary = 3
+    private static let phaseShift: UInt32 = 24
+
+    private static let calls: (Create, SetInteger, SetDouble, Append, Attach)? = {
+        guard let iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY),
+              let sl = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY),
+              let create = dlsym(iokit, "IOHIDEventCreate"), let setInteger = dlsym(iokit, "IOHIDEventSetIntegerValue"),
+              let setDouble = dlsym(iokit, "IOHIDEventSetDoubleValue"), let append = dlsym(iokit, "IOHIDEventAppendEvent"),
+              let attach = dlsym(sl, "SLEventSetIOHIDEvent") else {
+            NSLog("RemoteMac: IOHIDEvent calls unavailable; swipes won't reach the Dock on macOS 27")
+            return nil
+        }
+        return (unsafeBitCast(create, to: Create.self), unsafeBitCast(setInteger, to: SetInteger.self),
+                unsafeBitCast(setDouble, to: SetDouble.self), unsafeBitCast(append, to: Append.self),
+                unsafeBitCast(attach, to: Attach.self))
+    }()
+
+    /// False if the private calls are missing.
+    static func attach(to event: CGEvent, motion swipeMotion: Int, phase: DockSwipe.Phase, offset: Double, exitSpeed: Double) -> Bool {
+        guard let (create, setInteger, setDouble, append, attach) = calls,
+              let hid = create(nil, dockSwipeType, 0, UInt32(phase.rawValue) << phaseShift)?.takeRetainedValue() else { return false }
+        setInteger(hid, motion, swipeMotion)
+        setInteger(hid, flavor, flavorDockPrimary)
+        setDouble(hid, progress, -offset)
+        if phase == .ended || phase == .cancelled, let velocity = create(nil, velocityType, 0, 0)?.takeRetainedValue() {
+            setDouble(velocity, velocityX, -exitSpeed)
+            setDouble(velocity, velocityY, -exitSpeed)
+            append(hid, velocity, 0)
+        }
+        attach(event, hid)
+        return true
     }
 }
 
