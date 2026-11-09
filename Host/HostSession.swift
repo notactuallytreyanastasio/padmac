@@ -9,6 +9,7 @@ import Network
 final class HostSession {
     let peer: String
     private let conn: FramedConnection
+    private let media: QUICMediaHost
     private let queue = DispatchQueue(label: "remotemac.session", qos: .userInteractive)
     private var hello: Hello?
     private var quality = StreamQuality.full
@@ -27,9 +28,11 @@ final class HostSession {
     private var windowRequest: WindowRequest?
     private var ring = WindowRing()
     private var shown: MacWindow?
+    private let rememberedWindows = RememberedWindowStore()
     /// Where each window we resized was, to put it back when the session ends.
     private var originals: [CGWindowID: (pid: pid_t, frame: CGRect)] = [:]
     private var windowTimer: DispatchSourceTimer?
+    private var ended = false
     private var lastPolledFrame: CGRect?
     private var starting = false
     private var windowRetries = 0
@@ -49,6 +52,7 @@ final class HostSession {
     init(connection: NWConnection) {
         peer = connection.endpoint.debugDescription
         conn = FramedConnection(connection, queue: queue)
+        media = QUICMediaHost(queue: queue)
         // Development flags, for UI tests that must not move the real cursor:
         //   -dryRunInput YES   track input state but post nothing
         //   -inputLog <path>   append every received InputEvent as a JSON line
@@ -68,6 +72,13 @@ final class HostSession {
     func start() {
         conn.onMessage = { [weak self] type, payload in self?.handle(type, payload) }
         conn.onDrain = { [weak self] in self?.streamer?.drained() }
+        media.onDrain = { [weak self] in self?.streamer?.drained() }
+        media.onVideoLoss = { [weak self] in self?.streamer?.requestKeyframe() }
+        media.onChange = { [weak self] active in
+            guard let self, !self.ended else { return }
+            self.conn.send(.mediaStatus, Data([active ? 1 : 0]))
+            self.streamer?.requestKeyframe()
+        }
         conn.onReady = { [weak self] in
             guard let self else { return }
             self.onAuthenticated?(self)
@@ -96,6 +107,8 @@ final class HostSession {
     }
 
     private func teardown() {
+        ended = true
+        media.stop()
         awake = nil
         streamer?.stop()
         streamer = nil
@@ -119,11 +132,19 @@ final class HostSession {
         case .hello:
             guard hello == nil, let h = try? decoder.decode(Hello.self, from: payload) else { return fail(.badPayload(type)) }
             hello = h
+            if h.quicMedia == true {
+                media.start { [weak self] offer in
+                    guard let self, !self.ended else { return }
+                    self.conn.send(.mediaOffer, json: offer)
+                }
+            }
             audioOn.value = h.audio == true
             quality = h.quality ?? .full
             windowRequest = h.window
             onStatus?("Connected: \(h.clientName)")
-            startStream(on: h.window == nil ? h.fit.flatMap(fit) ?? h.displayID : h.displayID)
+            let remembered = rememberedWindows.load(client: h.clientName)
+            startStream(on: h.window == nil ? h.fit.flatMap(fit) ?? h.displayID : h.displayID,
+                        choice: remembered.map(WindowChoice.restore) ?? .keep(resize: true))
             startCursorReports()
             startWindowWatch()
             startFocusWatch()
@@ -134,6 +155,11 @@ final class HostSession {
             if let inputLog { inputLog.write(payload + Data("\n".utf8)) }
             injector.handle(event)
         case .requestKeyframe:
+            streamer?.requestKeyframe()
+        case .mediaFallback:
+            guard payload.isEmpty, hello?.quicMedia == true else { return fail(.badPayload(type)) }
+            media.stop()
+            conn.send(.mediaStatus, Data([0]))
             streamer?.requestKeyframe()
         case .selectDisplay:
             guard let s = try? decoder.decode(SelectDisplay.self, from: payload) else { return fail(.badPayload(type)) }
@@ -177,7 +203,7 @@ final class HostSession {
         case .clipboardImage:
             // Synchronously, for the same reason as text.
             DispatchQueue.main.sync { self.clipboard?.set(.image(payload)) }
-        case .screenInfo, .videoFormat, .videoFrame, .error, .cursor, .audio, .textFocus:
+        case .screenInfo, .videoFormat, .videoFrame, .error, .cursor, .audio, .textFocus, .mediaOffer, .mediaStatus:
             fail(.badPayload(type))
         }
     }
@@ -206,12 +232,18 @@ final class HostSession {
         let gen = generation
         let request = windowRequest, ring = self.ring, current = shown?.id, touch = !dryRunWindows
         let conn = self.conn
+        let media = self.media
+        let mediaEpoch = UInt32(truncatingIfNeeded: gen)
+        media.beginEpoch(mediaEpoch)
         let streamer = ScreenStreamer(output: .init(
-            canSend: { conn.canSendVideo },
-            format: { conn.send(.videoFormat, $0) },
-            frame: { conn.send(.videoFrame, $0) },
-            audio: { [audioOn] in if audioOn.value { conn.send(.audio, $0) } },
+            canSend: { media.accepts(mediaEpoch) && (media.isReady ? media.canSendVideo : conn.canSendVideo) },
+            format: { if media.setFormat($0, epoch: mediaEpoch) { conn.send(.videoFormat, $0) } },
+            frame: { if !media.video($0, epoch: mediaEpoch) { conn.send(.videoFrame, $0) } },
+            audio: { [audioOn] data in
+                if media.accepts(mediaEpoch), audioOn.value, !media.send(.audio, data: data), conn.canSendVideo { conn.send(.audio, data) }
+            },
             stopped: { error in
+                guard media.accepts(mediaEpoch) else { return }
                 NSLog("RemoteMac: capture stopped: \(error?.localizedDescription ?? "-")")
                 conn.cancel()
             }))
@@ -231,6 +263,7 @@ final class HostSession {
                     self.injector.displayID = streamer.displayID
                     self.injector.region = chosen?.window?.frame
                     self.shown = chosen?.window
+                    if let window = chosen?.window { self.rememberedWindows.remember(window, client: hello.clientName) }
                     self.lastPolledFrame = chosen?.window?.frame
                     if let chosen {
                         self.ring = chosen.ring
@@ -285,6 +318,7 @@ final class HostSession {
         /// Along the swipe order.
         case step(Int)
         case id(CGWindowID)
+        case restore(RememberedWindow)
     }
 
     struct Picked {
@@ -312,6 +346,7 @@ final class HostSession {
             resize = touch && (r || still == nil)
         case .step(let n): id = ring.step(from: current, by: n)
         case .id(let wanted): id = byID[wanted] != nil ? wanted : still ?? list.first?.id
+        case .restore(let remembered): id = remembered.restoredID(in: list) ?? still ?? list.first?.id
         }
         guard let id, var w = byID[id] else { return Picked(window: nil, ring: ring, windows: windows) }
 
@@ -422,7 +457,8 @@ final class HostSession {
             let now = (Float((p.x - b.minX) / b.width), Float((p.y - b.minY) / b.height))
             if let last = self.lastCursor, last == now { return }
             self.lastCursor = now
-            self.conn.send(.cursor, CursorPayload.encode(x: now.0, y: now.1))
+            let cursor = CursorPayload.encode(x: now.0, y: now.1)
+            if !self.media.send(.cursor, data: cursor) { self.conn.send(.cursor, cursor) }
         }
         t.resume()
         cursorTimer = t

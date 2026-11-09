@@ -43,6 +43,14 @@ class RemoteMacUITests: XCTestCase {
         app?.terminate()
     }
 
+    func testMediaNegotiatesQUICInsteadOfTCPVideo() {
+        // The paired control channel remains TCP; this checks the live media flow.
+        Thread.sleep(forTimeInterval: 1)
+        app.buttons["Stream quality"].tap()
+        let quic = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "QUIC / UDP")).firstMatch
+        XCTAssertTrue(quic.waitForExistence(timeout: 8), "QUIC media did not authenticate")
+    }
+
     private var zoom: Double {
         let v = screen.value as? String ?? ""
         guard let r = v.range(of: "zoom=") else { return 0 }

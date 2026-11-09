@@ -973,7 +973,7 @@ final class RemoteViewController: UIViewController, UIPointerInteractionDelegate
         quality.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in
             guard let self else { return done([]) }
             let s = self.session.linkStats()
-            let reading = String(format: "Now: %.1f Mbit/s video, %.0f fps · %.1f Mbit/s total", s.videoMbps, s.fps, s.totalMbps)
+            let reading = String(format: "%@ · %.1f Mbit/s video, %.0f fps · %.1f Mbit/s total", self.session.transport, s.videoMbps, s.fps, s.totalMbps)
             let choices = StreamQuality.allCases.map { q in
                 let limit = q.maxWidth.map { "\($0) wide" } ?? "native"
                 return UIAction(title: q.title,

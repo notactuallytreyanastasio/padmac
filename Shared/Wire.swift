@@ -2,8 +2,9 @@ import Foundation
 
 /// The wire format shared by the Mac host and the iPad client.
 ///
-/// Every message is `[type: u8][length: u32 big-endian][payload]`, carried over
-/// TLS-PSK on TCP. Video and cursor payloads are raw bytes; the rest is JSON or text.
+/// Control messages are `[type: u8][length: u32 big-endian][payload]` over
+/// TLS-PSK/TCP. Negotiated live media uses authenticated QUIC datagrams;
+/// these framing types also provide compatibility with older TCP-only peers.
 enum Wire {
     static let serviceType = "_remotemac._tcp"
     static let port: UInt16 = 47428
@@ -29,6 +30,10 @@ enum MessageType: UInt8 {
     /// One byte: 1 when the Mac's keyboard focus is in something you type into
     /// (a text field, a text view, a terminal), 0 when it left. Sent on change.
     case textFocus = 0x09
+    /// QUIC endpoint and certificate pin, inside the paired control channel.
+    case mediaOffer = 0x0B
+    /// One byte: 1 for QUIC media, 0 for TCP fallback.
+    case mediaStatus = 0x0C
 
     // both directions
     /// UTF-8 text now on the sender's clipboard.
@@ -52,6 +57,8 @@ enum MessageType: UInt8 {
     case switchWindow = 0x17
     /// JSON `FitDisplay`. The host streams a virtual display of that size, making or resizing it.
     case fitDisplay = 0x18
+    /// Stop QUIC media and resume the compatible TCP stream.
+    case mediaFallback = 0x1A
 }
 
 enum VideoCodec: String, Codable {
@@ -130,6 +137,8 @@ struct Hello: Codable {
     var window: WindowRequest? = nil
     /// Start on a virtual display of this size, instead of `displayID`.
     var fit: FitDisplay? = nil
+    /// Opt in to authenticated QUIC media; older hosts ignore this field.
+    var quicMedia: Bool? = nil
 }
 
 /// The iPad window's size in points, which is the size the Mac display takes.
@@ -169,7 +178,7 @@ enum StreamQuality: String, Codable, CaseIterable {
         switch self {
         case .full: nil
         case .balanced: 2560
-        case .saver: 1920
+        case .saver: 1280
         }
     }
 
@@ -178,11 +187,11 @@ enum StreamQuality: String, Codable, CaseIterable {
         switch self {
         case .full: 40_000_000
         case .balanced: 8_000_000
-        case .saver: 2_500_000
+        case .saver: 1_200_000
         }
     }
 
-    var framesPerSecond: Int { self == .saver ? 30 : 60 }
+    var framesPerSecond: Int { self == .saver ? 24 : 60 }
 
     /// Stream size for a display of `pixels`, within the client's limits and
     /// the codec's. Keeps the aspect ratio; even dimensions, as encoders need.

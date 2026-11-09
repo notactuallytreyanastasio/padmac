@@ -33,6 +33,8 @@ final class VideoEncoder {
         let bitrate = quality.bitrate(width: width, height: height, codec: codec)
         let props: [CFString: Any] = [
             kVTCompressionPropertyKey_RealTime: true,
+            kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality: true,
+            kVTCompressionPropertyKey_MaxFrameDelayCount: 0,
             kVTCompressionPropertyKey_ProfileLevel: codec == .hevc ? kVTProfileLevel_HEVC_Main_AutoLevel : kVTProfileLevel_H264_ConstrainedHigh_AutoLevel,
             kVTCompressionPropertyKey_AllowFrameReordering: false,
             kVTCompressionPropertyKey_AverageBitRate: bitrate,

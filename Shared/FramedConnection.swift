@@ -16,18 +16,25 @@ final class FramedConnection {
     private var closed = false
     private let lock = NSLock()
     private var videoInFlight = 0
+    private var mediaBytesInFlight = 0
+    private var needsDrain = false
+    private var drainTimer: DispatchSourceTimer?
     static let maxVideoInFlight = 2
+    static let maxMediaBytesInFlight = 32 * 1024
 
     init(_ connection: NWConnection, queue: DispatchQueue) {
         self.connection = connection
         self.queue = queue
     }
 
+    deinit { drainTimer?.cancel() }
+
     func start() {
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
             case .ready:
+                self.startDrainWatch()
                 self.onReady?()
             case .failed(let error):
                 self.close(error)
@@ -48,8 +55,30 @@ final class FramedConnection {
 
     /// True when the pipe can take another video frame without building latency.
     var canSendVideo: Bool {
+        // contentProcessed means handed to TCP, not acknowledged by the peer.
+        let tcp = connection.metadata(definition: NWProtocolTCP.definition) as? NWProtocolTCP.Metadata
+        let queued = Int(tcp?.availableSendBuffer ?? 0)
         lock.lock(); defer { lock.unlock() }
-        return videoInFlight < Self.maxVideoInFlight
+        let ready = videoInFlight < Self.maxVideoInFlight
+            && mediaBytesInFlight < Self.maxMediaBytesInFlight
+            && queued < Self.maxMediaBytesInFlight
+        if !ready { needsDrain = true }
+        return ready
+    }
+
+    /// ACKs can drain TCP after all contentProcessed callbacks already ran.
+    private func startDrainWatch() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .milliseconds(20), repeating: .milliseconds(20))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.lock.lock(); let waiting = self.needsDrain; self.lock.unlock()
+            guard waiting, self.canSendVideo else { return }
+            self.lock.lock(); self.needsDrain = false; self.lock.unlock()
+            self.onDrain?()
+        }
+        timer.resume()
+        drainTimer = timer
     }
 
     func send(_ type: MessageType, _ payload: Data = Data()) {
@@ -60,12 +89,22 @@ final class FramedConnection {
         frame.append(payload)
 
         let isVideo = type == .videoFrame
-        if isVideo { lock.lock(); videoInFlight += 1; lock.unlock() }
+        let isMedia = isVideo || type == .audio
+        let byteCount = frame.count
+        if isMedia {
+            lock.lock()
+            mediaBytesInFlight += byteCount
+            if isVideo { videoInFlight += 1 }
+            lock.unlock()
+        }
         connection.send(content: frame, completion: .contentProcessed { [weak self] error in
             guard let self else { return }
-            if isVideo {
-                self.lock.lock(); self.videoInFlight -= 1; let now = self.videoInFlight; self.lock.unlock()
-                if now < Self.maxVideoInFlight { self.onDrain?() }
+            if isMedia {
+                self.lock.lock()
+                self.mediaBytesInFlight -= byteCount
+                if isVideo { self.videoInFlight -= 1 }
+                self.lock.unlock()
+                if self.canSendVideo { self.onDrain?() }
             }
             if let error { self.close(error) }
         })
@@ -78,6 +117,8 @@ final class FramedConnection {
     private func close(_ error: Error?) {
         guard !closed else { return }
         closed = true
+        drainTimer?.cancel()
+        drainTimer = nil
         connection.cancel()
         onClose?(error)
         onMessage = nil; onReady = nil; onClose = nil; onDrain = nil

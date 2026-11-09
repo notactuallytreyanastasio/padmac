@@ -33,6 +33,10 @@ var frames = 0, keyframes = 0, bytes = 0, decoded = 0, cursorReports = 0
 var infos: [ScreenInfo] = []
 var start = Date()
 var wrote = false
+var quic: QUICMediaChannel?
+var quicReady = false
+var quicFrames = 0
+var mediaOrder = MediaVideoOrder()
 var failures = 0
 let mainDisplaySize = CGDisplayBounds(CGMainDisplayID()).size
 var clipboardReceived: [String] = []
@@ -48,6 +52,7 @@ func check(_ ok: Bool, _ what: String) {
 }
 
 func writePNG(_ pb: CVPixelBuffer) {
+    if flags.contains("--no-image") { return }
     let ci = CIImage(cvPixelBuffer: pb)
     let cg = CIContext().createCGImage(ci, from: ci.extent)!
     let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: outPath) as CFURL, UTType.png.identifier as CFString, 1, nil)!
@@ -343,9 +348,10 @@ conn.onReady = {
     conn.send(.hello, json: Hello(clientName: "probe", maxWidth: 8192, maxHeight: 8192,
                                   codecs: flags.contains("--h264") ? [.h264] : [.hevc, .h264],
                                   audio: flags.contains("--audio"),
-                                  quality: flags.contains("--quality") ? .saver : nil,
+                                  quality: flags.contains("--quality") || flags.contains("--saver") ? .saver : nil,
                                   window: flags.contains("--window") || flags.contains("--window-resize") ? windowAsk : nil,
-                                  fit: flags.contains("--fit") ? FitDisplay(width: 1376, height: 1032) : nil))
+                                  fit: flags.contains("--fit") ? FitDisplay(width: 1376, height: 1032) : nil,
+                                  quicMedia: flags.contains("--quic") ? true : nil))
 }
 conn.onClose = { error in
     print("closed: \(error.map { "\($0)" } ?? "clean")")
@@ -353,8 +359,32 @@ conn.onClose = { error in
     restoreClipboard()
     exit(1)
 }
-conn.onMessage = { type, payload in
+func handleMessage(_ type: MessageType, _ payload: Data, fromMedia: Bool = false) {
+    if quicReady, !fromMedia, [.videoFrame, .videoFormat, .audio, .cursor].contains(type) { return }
     switch type {
+    case .mediaOffer:
+        guard let offer = try? JSONDecoder().decode(MediaOffer.self, from: payload), let port = NWEndpoint.Port(rawValue: offer.port) else { return }
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: MediaSecurity.client(fingerprint: offer.certificateSHA256, queue: queue))
+        let channel = QUICMediaChannel(connection: connection, token: offer.token, client: true, queue: queue)
+        quic = channel
+        channel.onReady = { quicReady = true; print("QUIC media authenticated") }
+        channel.onMessage = { message in
+            switch message.kind {
+            case .video:
+                let order = mediaOrder.accept(message)
+                if order.requestKeyframe { conn.send(.requestKeyframe) }
+                guard order.decode, let video = MediaVideo.decode(message.data) else { return }
+                if let format = video.format { handleMessage(.videoFormat, format, fromMedia: true) }
+                quicFrames += 1
+                handleMessage(.videoFrame, video.frame, fromMedia: true)
+            case .audio: handleMessage(.audio, message.data, fromMedia: true)
+            case .cursor: handleMessage(.cursor, message.data, fromMedia: true)
+            default: break
+            }
+        }
+        channel.onClose = { quicReady = false; conn.send(.mediaFallback) }
+        channel.start()
+    case .mediaStatus: print("media transport: \(payload.first == 1 ? "QUIC/UDP" : "TCP")")
     case .screenInfo:
         let info = try! JSONDecoder().decode(ScreenInfo.self, from: payload)
         infos.append(info)
@@ -394,7 +424,7 @@ conn.onMessage = { type, payload in
                 }
             }
             if flags.contains("--quality") {
-                check(info.streamWidth <= 1920, "data saver streams at most 1920 wide: \(info.streamWidth)x\(info.streamHeight)")
+                check(info.streamWidth <= StreamQuality.saver.maxWidth!, "data saver respects its size limit: \(info.streamWidth)x\(info.streamHeight)")
                 let startBytes = bytes
                 after(3.0) {
                     // Measured over 3s; the refine passes and a keyframe ride on top of the average.
@@ -425,7 +455,7 @@ conn.onMessage = { type, payload in
             windowSwitched(info)
         } else if let q = qualitySwitchAt, infos.count == q + 1 {
             // The restart this request caused, not the --displays one that may come first.
-            check(info.streamWidth > 1920 || info.screenWidth * 2 <= 1920, "switching to full restarts at \(info.streamWidth)x\(info.streamHeight)")
+            check(info.streamWidth > StreamQuality.saver.maxWidth! || info.screenWidth * 2 <= Double(StreamQuality.saver.maxWidth!), "switching to full restarts at \(info.streamWidth)x\(info.streamHeight)")
         } else if flags.contains("--displays") {
             let expectSwitch = infos[0].displays.count > 1
             check(expectSwitch ? info.displayID != infos[0].displayID : true, "stream restarted on \(info.displayName)")
@@ -495,6 +525,7 @@ conn.onMessage = { type, payload in
         print("unexpected \(type)")
     }
 }
+conn.onMessage = { type, payload in handleMessage(type, payload) }
 conn.start()
 
 if flags.contains("--focus") {
@@ -508,6 +539,7 @@ DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
     print(String(format: "%d frames (%d key), %d decoded, %.1f KB avg, %.2f Mbit/s over %.1fs, %d cursor reports",
                  frames, keyframes, decoded, Double(bytes) / Double(max(frames, 1)) / 1024, Double(bytes) * 8 / secs / 1e6, secs, cursorReports))
     check(frames > 0 && decoded >= frames - 2, "video decodes")
+    if flags.contains("--quic") { check(quicReady && quicFrames > 0, "QUIC/UDP media authenticated and decoded \(quicFrames) frames") }
     if flags.contains("--audio") {
         let secs = max(0.001, (audioLast ?? Date()).timeIntervalSince(audioFirst ?? Date()))
         let rate = Double(audioFrames) / secs
