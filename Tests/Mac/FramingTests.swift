@@ -125,4 +125,38 @@ final class FramingTests: XCTestCase {
         c.send(.cursor, CursorPayload.encode(x: 0, y: 0))
         XCTAssertFalse(c.canSendVideo)
     }
+
+    func testAudioAlsoBackpressuresVideoAndDrainResumesIt() throws {
+        var peer: NWConnection?
+        defer { peer?.cancel() }
+        let port = try listen(code: "TESTCODE") { conn in
+            peer = conn
+            conn.start(queue: self.queue)
+        }
+        let ready = expectation(description: "ready")
+        let c = connect(port: port, code: "TESTCODE")
+        c.onReady = { ready.fulfill() }
+        c.start()
+        client = c
+        wait(for: [ready], timeout: 5)
+
+        let payload = Data(repeating: 1, count: 16 << 20)
+        c.send(.audio, payload)
+        XCTAssertFalse(c.canSendVideo, "pending sound must not grow an unbounded queue ahead of video/control")
+
+        let drained = expectation(description: "media budget recovers")
+        var resumed = false
+        c.onDrain = {
+            if c.canSendVideo, !resumed { resumed = true; drained.fulfill() }
+        }
+        let received = expectation(description: "peer read audio")
+        peer?.receive(minimumIncompleteLength: payload.count + Wire.headerSize,
+                      maximumLength: payload.count + Wire.headerSize) { data, _, _, error in
+            XCTAssertNil(error)
+            XCTAssertEqual(data?.count, payload.count + Wire.headerSize)
+            received.fulfill()
+        }
+        wait(for: [received, drained], timeout: 15)
+        XCTAssertTrue(c.canSendVideo)
+    }
 }

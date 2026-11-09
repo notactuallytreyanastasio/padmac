@@ -26,6 +26,12 @@ final class RemoteSession: ObservableObject {
     let hostName: String
     @Published private(set) var state = State.connecting
     @Published private(set) var screen: ScreenInfo?
+    @Published private(set) var transport = "TCP"
+    private var media: QUICMediaChannel? // session queue
+    private var mediaOrder = MediaVideoOrder()
+    private var lastMediaKeyframeRequest: TimeInterval = 0
+    private var lastMediaCursor: UInt32 = 0
+    private var lastMediaAudio: UInt32 = 0
     weak var video: VideoSink?
     /// Main thread: the Mac cursor, normalised to the streamed display.
     var onCursor: ((Double, Double) -> Void)?
@@ -86,6 +92,7 @@ final class RemoteSession: ObservableObject {
         send(.releaseAll)
         conn?.cancel()
         conn = nil
+        stopMedia()
         if let foreground { NotificationCenter.default.removeObserver(foreground) }
     }
 
@@ -168,13 +175,14 @@ final class RemoteSession: ObservableObject {
     private func connect() {
         guard !stopped else { return }
         conn?.cancel()
+        stopMedia()
         let native = UIScreen.main.nativeBounds.size
         // Twice the iPad's own pixels, so zooming in stays sharp. The host caps it at the Mac's native size.
         let hello = Hello(clientName: UIDevice.current.name,
                           maxWidth: min(8192, Int(max(native.width, native.height)) * 2),
                           maxHeight: min(8192, Int(min(native.width, native.height)) * 2),
                           codecs: [.hevc, .h264], displayID: displayID, audio: audioEnabled, quality: quality,
-                          fit: fitEnabled && windowRequest == nil ? windowSize : nil)
+                          fit: fitEnabled && windowRequest == nil ? windowSize : nil, quicMedia: true)
         let c = FramedConnection(NWConnection(to: endpoint, using: PairingSecurity.parameters(code: code)), queue: queue)
         conn = c
         queue.async { self.hostError = nil }
@@ -200,6 +208,7 @@ final class RemoteSession: ObservableObject {
     private func lost(_ error: Error?, hostError: String?) {
         guard !stopped else { return }
         conn = nil
+        stopMedia()
         let (message, badCode) = Self.describe(error)
         if let hostError {
             state = .failed(hostError, badCode: false)
@@ -217,13 +226,39 @@ final class RemoteSession: ObservableObject {
         }
     }
 
-    private func handle(_ type: MessageType, _ payload: Data) {
+    private func handle(_ type: MessageType, _ payload: Data, fromMedia: Bool = false) {
+        if !fromMedia, media?.isReady == true, [.videoFormat, .videoFrame, .audio, .cursor].contains(type) { return }
         let now = ProcessInfo.processInfo.systemUptime
         meterLock.lock()
         totalMeter.add(bytes: payload.count + Wire.headerSize, at: now)
         if type == .videoFrame { videoMeter.add(bytes: payload.count, at: now) }
         meterLock.unlock()
         switch type {
+        case .mediaOffer:
+            guard let offer = try? JSONDecoder().decode(MediaOffer.self, from: payload),
+                  offer.token.count == 32, offer.certificateSHA256.count == 32,
+                  let control = conn,
+                  case .hostPort(let host, _) = control.connection.currentPath?.remoteEndpoint ?? endpoint,
+                  let port = NWEndpoint.Port(rawValue: offer.port) else { return fail(type) }
+            media?.onClose = nil; media?.stop()
+            mediaOrder = MediaVideoOrder()
+            lastMediaCursor = 0; lastMediaAudio = 0
+            let connection = NWConnection(host: host, port: port, using: MediaSecurity.client(fingerprint: offer.certificateSHA256, queue: queue))
+            let channel = QUICMediaChannel(connection: connection, token: offer.token, client: true, queue: queue)
+            media = channel
+            channel.onReady = { [weak self] in DispatchQueue.main.async { self?.transport = "QUIC / UDP" } }
+            channel.onMessage = { [weak self] message in self?.receiveMedia(message) }
+            channel.onClose = { [weak self, weak channel, weak control] in
+                guard let self, self.media === channel else { return }
+                self.media = nil
+                control?.send(.mediaFallback)
+                DispatchQueue.main.async { self.transport = "TCP fallback" }
+            }
+            channel.start()
+        case .mediaStatus:
+            guard payload.count == 1, let active = payload.first, active <= 1 else { return fail(type) }
+            if active == 0 { media?.onClose = nil; media?.stop(); media = nil }
+            DispatchQueue.main.async { self.transport = active == 1 ? "QUIC / UDP" : "TCP fallback" }
         case .screenInfo:
             guard let info = try? JSONDecoder().decode(ScreenInfo.self, from: payload) else { return fail(type) }
             DispatchQueue.main.async {
@@ -261,8 +296,40 @@ final class RemoteSession: ObservableObject {
             player.enqueue(samples)
         case .error:
             hostError = String(decoding: payload, as: UTF8.self)
-        case .hello, .input, .requestKeyframe, .selectDisplay, .audioEnabled, .setQuality, .setWindowMode, .switchWindow, .fitDisplay:
+        case .hello, .input, .requestKeyframe, .selectDisplay, .audioEnabled, .setQuality, .setWindowMode, .switchWindow, .fitDisplay, .mediaFallback:
             fail(type)
+        }
+    }
+
+    private func stopMedia() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.media?.onClose = nil; self.media?.stop(); self.media = nil
+            self.mediaOrder = MediaVideoOrder()
+        }
+        transport = "TCP"
+    }
+
+    private func receiveMedia(_ message: MediaDatagrams.Message) {
+        switch message.kind {
+        case .video:
+            let order = mediaOrder.accept(message)
+            if order.requestKeyframe {
+                let now = ProcessInfo.processInfo.systemUptime
+                if now - lastMediaKeyframeRequest > 0.2 { lastMediaKeyframeRequest = now; conn?.send(.requestKeyframe) }
+            }
+            guard order.decode, let video = MediaVideo.decode(message.data) else { return }
+            if let format = video.format { handle(.videoFormat, format, fromMedia: true) }
+            handle(.videoFrame, video.frame, fromMedia: true)
+        case .audio:
+            guard message.id > lastMediaAudio else { return }
+            lastMediaAudio = message.id
+            handle(.audio, message.data, fromMedia: true)
+        case .cursor:
+            guard message.id > lastMediaCursor else { return }
+            lastMediaCursor = message.id
+            handle(.cursor, message.data, fromMedia: true)
+        default: break
         }
     }
 

@@ -67,8 +67,8 @@ final class WireTests: XCTestCase {
         }
         XCTAssertEqual(size(.full, lg), "5120x1440")
         XCTAssertEqual(size(.balanced, lg), "2560x720")
-        XCTAssertEqual(size(.saver, lg), "1920x540")
-        XCTAssertEqual(size(.saver, builtIn), "1920x1246", "aspect kept, dimensions even")
+        XCTAssertEqual(size(.saver, lg), "1280x360")
+        XCTAssertEqual(size(.saver, builtIn), "1280x830", "aspect kept, dimensions even")
         XCTAssertEqual(size(.full, lg, limit: 4096), "4096x1152", "H.264's limit still applies")
         // The client's own limit wins when it's smaller.
         let small = StreamQuality.full.streamSize(display: lg, clientMax: (w: 1000, h: 1000), codecLimit: 8192)
@@ -78,9 +78,9 @@ final class WireTests: XCTestCase {
     func testQualityBitratesStayUnderTheirCeilings() {
         XCTAssertEqual(StreamQuality.full.bitrate(width: 5120, height: 1440, codec: .hevc), 22_118_400)
         XCTAssertEqual(StreamQuality.balanced.bitrate(width: 2560, height: 720, codec: .hevc), 6_000_000, "the sharpness floor")
-        XCTAssertEqual(StreamQuality.saver.bitrate(width: 1920, height: 540, codec: .hevc), 2_500_000, "the floor never beats the ceiling")
+        XCTAssertEqual(StreamQuality.saver.bitrate(width: 1280, height: 360, codec: .hevc), 1_200_000, "the floor never beats the ceiling")
         XCTAssertEqual(StreamQuality.full.bitrate(width: 8000, height: 4000, codec: .h264), 40_000_000)
-        XCTAssertEqual(StreamQuality.saver.framesPerSecond, 30)
+        XCTAssertEqual(StreamQuality.saver.framesPerSecond, 24)
     }
 
     func testQualityOnTheWire() throws {

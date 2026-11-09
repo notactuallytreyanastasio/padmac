@@ -82,6 +82,16 @@ final class VideoPipelineTests: XCTestCase {
         XCTAssertEqual(pics.map(\.luma).last ?? 0, 180, accuracy: 6)
     }
 
+    func testRealtimeHEVCEmitsWithoutWaitingForFutureInputFrames() throws {
+        let encoder = try VideoEncoder(codec: .hevc, width: 640, height: 360, quality: .saver)
+        let emitted = DispatchSemaphore(value: 0)
+        encoder.onFrame = { _ in emitted.signal() }
+        encoder.encode(frame(640, 360, luma: 40), captureNanos: 1, forceKeyframe: true)
+        XCTAssertEqual(emitted.wait(timeout: .now() + 0.3), .success, "the initial picture must not wait for more input")
+        encoder.encode(frame(640, 360, luma: 80), captureNanos: 2, forceKeyframe: false)
+        XCTAssertEqual(emitted.wait(timeout: .now() + 0.3), .success, "dependent pictures must not build an encoder queue")
+    }
+
     func testFormatIsSentBeforeEveryKeyframeAndOnlyThen() throws {
         let e = try encode(.hevc, 640, 360, [(10, 1, true), (20, 2, false), (30, 3, true), (40, 4, false)])
         let keys = e.frames.map { FramePayload.parse($0)!.keyframe }

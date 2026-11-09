@@ -535,8 +535,8 @@ and presses ⌘V. It's a system paste control, so iPadOS doesn't ask
 permission each time.
 
 Quality: the gauge button picks **Full** (native, up to 40 Mbit/s, 60 fps),
-**Balanced** (2560 wide, 8 Mbit/s, 60 fps) or **Data saver** (1920 wide,
-2.5 Mbit/s, 30 fps). It switches without reconnecting, and the menu shows
+**Balanced** (2560 wide, 8 Mbit/s, 60 fps) or **Data saver** (1280 wide,
+1.2 Mbit/s, 24 fps). It switches without reconnecting, and the menu shows
 what the link is carrying right now. Audio adds 1.5 Mbit/s; turn it off on
 a tight link.
 
@@ -645,9 +645,18 @@ focused element is text (role `AXTextField`, `AXTextArea`, `AXComboBox` or
 sends `textFocus` (0x09, one byte) when that changes. iTerm2's terminal
 reports `AXTextArea`; Messages' field, `AXTextField`.
 
-The link is TLS 1.2 with a pre-shared key derived from the 8-character pairing
-code. There are no certificates and no accounts. A client without the code
-fails the handshake (`-9820: bad MAC`).
+The control link is TLS 1.2 with a pre-shared key derived from the 8-character
+pairing code. A client without the code fails the handshake (`-9820: bad MAC`).
+New peers negotiate QUIC datagrams for video, audio, and cursor reports. The
+paired control link supplies a per-session token and pins the host's ephemeral
+certificate; QUIC does not trust arbitrary certificates. Media uses small
+fragments, XOR recovery for one missing fragment per group of eight, bounded
+receiver-acknowledged video, expiry of incomplete frames, and keyframe requests
+after unrecoverable loss. Keyframes include their decoder configuration.
+Clicks, keys, and clipboard stay on the independent reliable control link.
+The quality menu identifies **QUIC / UDP** or **TCP fallback**. Older peers and
+hosts without memory-only identity support (before macOS 15) retain TCP media.
+The encoder prioritizes speed and holds no extra frames before emitting output.
 
 ### Signing
 
