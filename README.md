@@ -598,6 +598,12 @@ window button in the toolbar switches between one window and the whole display
 (on any device; the choice is remembered), sets **Mac text size**, and below
 those lists the windows.
 
+The Mac remembers the last selected window for each client name and restores it
+when that client reconnects in window mode, including by a different network
+address. Closed windows, changed app processes, and selections from an earlier
+Mac boot fall back to the normal window choice. Restarting the host preserves
+the selection while the same Mac session and app window remain alive.
+
 How big the window gets: about 840 Mac points wide in portrait, which most
 Mac apps accept, and at least 600 tall, in the shape of the phone's screen
 inside its safe area. On an unfolded Duo in portrait that is about 1.35 Mac

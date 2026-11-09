@@ -28,6 +28,7 @@ final class HostSession {
     private var windowRequest: WindowRequest?
     private var ring = WindowRing()
     private var shown: MacWindow?
+    private let rememberedWindows = RememberedWindowStore()
     /// Where each window we resized was, to put it back when the session ends.
     private var originals: [CGWindowID: (pid: pid_t, frame: CGRect)] = [:]
     private var windowTimer: DispatchSourceTimer?
@@ -141,7 +142,9 @@ final class HostSession {
             quality = h.quality ?? .full
             windowRequest = h.window
             onStatus?("Connected: \(h.clientName)")
-            startStream(on: h.window == nil ? h.fit.flatMap(fit) ?? h.displayID : h.displayID)
+            let remembered = rememberedWindows.load(client: h.clientName)
+            startStream(on: h.window == nil ? h.fit.flatMap(fit) ?? h.displayID : h.displayID,
+                        choice: remembered.map(WindowChoice.restore) ?? .keep(resize: true))
             startCursorReports()
             startWindowWatch()
             startFocusWatch()
@@ -260,6 +263,7 @@ final class HostSession {
                     self.injector.displayID = streamer.displayID
                     self.injector.region = chosen?.window?.frame
                     self.shown = chosen?.window
+                    if let window = chosen?.window { self.rememberedWindows.remember(window, client: hello.clientName) }
                     self.lastPolledFrame = chosen?.window?.frame
                     if let chosen {
                         self.ring = chosen.ring
@@ -314,6 +318,7 @@ final class HostSession {
         /// Along the swipe order.
         case step(Int)
         case id(CGWindowID)
+        case restore(RememberedWindow)
     }
 
     struct Picked {
@@ -341,6 +346,7 @@ final class HostSession {
             resize = touch && (r || still == nil)
         case .step(let n): id = ring.step(from: current, by: n)
         case .id(let wanted): id = byID[wanted] != nil ? wanted : still ?? list.first?.id
+        case .restore(let remembered): id = remembered.restoredID(in: list) ?? still ?? list.first?.id
         }
         guard let id, var w = byID[id] else { return Picked(window: nil, ring: ring, windows: windows) }
 
